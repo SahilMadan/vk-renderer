@@ -4,13 +4,13 @@
 #include <vector>
 #define VK_USE_PLATFORM_WIN32_KHR
 #include <vulkan/vulkan.h>
+
 #include "task_stack.hpp"
 
 namespace vk {
 
 class Renderer {
  public:
-
   struct InitParams {
     int width;
     int height;
@@ -34,7 +34,7 @@ class Renderer {
   bool initialized_ = false;
   int framenumber_ = 0;
 
-  VkExtent2D render_extent_;
+  VkExtent2D swapchain_extent_;
 
   VkInstance instance_ = VK_NULL_HANDLE;
   VkPhysicalDevice gpu_ = VK_NULL_HANDLE;
@@ -45,6 +45,23 @@ class Renderer {
 
   VkQueue graphics_queue_ = VK_NULL_HANDLE;
   uint32_t graphics_queue_family_ = 0;
+
+  VkSwapchainKHR swapchain_;
+  VkFormat swapchain_image_format_;
+  std::vector<VkImage> swapchain_images_;
+  std::vector<VkImageView> swapchain_image_views_;
+
+  VkCommandPool command_pool_;
+  VkCommandBuffer command_buffer_;
+
+  VkRenderPass renderpass_;
+  std::vector<VkFramebuffer> framebuffers_;
+
+  // Semaphore used for GPU to GPU sync.
+  VkSemaphore present_semaphore_;
+  VkSemaphore render_semaphore_;
+  // Used for GPU to CPU communication.
+  VkFence render_fence_;
 
   util::TaskStack deletion_stack_;
 };

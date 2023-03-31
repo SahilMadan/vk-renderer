@@ -1,6 +1,7 @@
 #include <SDL.h>
-#include <SDL_vulkan.h>
 #include <SDL_syswm.h>
+#include <SDL_vulkan.h>
+
 #include <iostream>
 #include <vector>
 
@@ -20,6 +21,7 @@ void MainLoop() {
         quit = true;
       }
     }
+    renderer.Draw();
   }
 }
 
@@ -33,8 +35,7 @@ int main(int argc, char *argv[]) {
       kWindowWidth, kWindowHeight, SDL_WINDOW_SHOWN | SDL_WINDOW_VULKAN);
 
   unsigned int extension_count = 0;
-  if (!SDL_Vulkan_GetInstanceExtensions(window, &extension_count,
-                                        nullptr)) {
+  if (!SDL_Vulkan_GetInstanceExtensions(window, &extension_count, nullptr)) {
     std::cerr << "Unable to query the number of Vulkan instance extensions.\n";
     return -1;
   }
@@ -57,6 +58,7 @@ int main(int argc, char *argv[]) {
   renderer_params.window_handle = window_info.info.win.window;
 
   if (!renderer.Init(renderer_params)) {
+    renderer.Shutdown();
     std::cerr << "Unable to initialize the renderer." << std::endl;
     return -1;
   }
