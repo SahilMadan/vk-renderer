@@ -2,9 +2,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <iostream>
 #include <optional>
 #include <unordered_set>
+
+#include "shader.hpp"
+#include "vk_init.hpp"
 
 namespace {
 
@@ -529,6 +533,8 @@ bool Renderer::Init(InitParams params) {
   deletion_stack_.Push(
       [=]() { vkDestroySemaphore(device_, present_semaphore_, nullptr); });
 
+  InitPipeline();
+
   // Everything is initialized.
   initialized_ = true;
 }
@@ -596,6 +602,10 @@ void Renderer::Draw() {
   vkCmdBeginRenderPass(command_buffer_, &renderpass_info,
                        VK_SUBPASS_CONTENTS_INLINE);
 
+  vkCmdBindPipeline(command_buffer_, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    triangle_pipeline_);
+  vkCmdDraw(command_buffer_, 3, 1, 0, 0);
+
   vkCmdEndRenderPass(command_buffer_);
   if (vkEndCommandBuffer(command_buffer_) != VK_SUCCESS) {
     return;
@@ -641,6 +651,124 @@ void Renderer::Draw() {
   }
 
   framenumber_++;
+}
+
+std::optional<VkPipeline> Renderer::PipelineBuilder::Build(
+    VkDevice device, VkRenderPass renderpass) {
+  VkPipelineViewportStateCreateInfo viewport_state = {};
+  viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+  viewport_state.pNext = nullptr;
+
+  // We don't support multiple viewports or scissors.
+  viewport_state.viewportCount = 1;
+  viewport_state.pViewports = &viewport;
+  viewport_state.scissorCount = 1;
+  viewport_state.pScissors = &scissor;
+
+  VkPipelineColorBlendStateCreateInfo color_blending = {};
+  color_blending.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+  color_blending.pNext = nullptr;
+
+  // We aren't using transparent objects so the blending is "no blend".
+  color_blending.logicOpEnable = VK_FALSE;
+  color_blending.logicOp = VK_LOGIC_OP_COPY;
+  color_blending.attachmentCount = 1;
+  color_blending.pAttachments = &color_blend_attachment;
+
+  VkGraphicsPipelineCreateInfo pipeline_info = {};
+  pipeline_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+  pipeline_info.pNext = nullptr;
+
+  pipeline_info.stageCount = shader_stages.size();
+  pipeline_info.pStages = shader_stages.data();
+  pipeline_info.pVertexInputState = &vertex_input_info;
+  pipeline_info.pInputAssemblyState = &input_assembly;
+  pipeline_info.pViewportState = &viewport_state;
+  pipeline_info.pRasterizationState = &rasterizer;
+  pipeline_info.pMultisampleState = &multisampling;
+  pipeline_info.pColorBlendState = &color_blending;
+  pipeline_info.layout = layout;
+  pipeline_info.renderPass = renderpass;
+  pipeline_info.subpass = 0;
+  pipeline_info.basePipelineHandle = VK_NULL_HANDLE;
+
+  VkPipeline pipeline;
+  if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_info,
+                                nullptr, &pipeline) != VK_SUCCESS) {
+    return std::nullopt;
+  }
+  return pipeline;
+}
+
+bool Renderer::InitPipeline() {
+  VkShaderModule triangle_vert;
+  if (!LoadShader(device_, "shaders/triangle.vert.spv", &triangle_vert)) {
+    std::cerr << "Unable to load file: triangle.vert.spv" << std::endl;
+    return false;
+  }
+  deletion_stack_.Push(
+      [=]() { vkDestroyShaderModule(device_, triangle_vert, nullptr); });
+
+  VkShaderModule triangle_frag;
+  if (!LoadShader(device_, "shaders/triangle.frag.spv", &triangle_frag)) {
+    std::cerr << "Unable to load file: triangle.frag.spv" << std::endl;
+    return false;
+  }
+  deletion_stack_.Push(
+      [=]() { vkDestroyShaderModule(device_, triangle_frag, nullptr); });
+
+  VkPipelineLayoutCreateInfo pipeline_layout_info =
+      init::PipelineLayoutCreateInfo();
+  if (vkCreatePipelineLayout(device_, &pipeline_layout_info, nullptr,
+                             &triangle_pipeline_layout_) != VK_SUCCESS) {
+    return false;
+  }
+  deletion_stack_.Push([=]() {
+    vkDestroyPipelineLayout(device_, triangle_pipeline_layout_, nullptr);
+  });
+
+  PipelineBuilder builder;
+
+  builder.shader_stages.push_back(init::PipelineShaderStageCreateInfo(
+      VK_SHADER_STAGE_VERTEX_BIT, triangle_vert));
+  builder.shader_stages.push_back(init::PipelineShaderStageCreateInfo(
+      VK_SHADER_STAGE_FRAGMENT_BIT, triangle_frag));
+
+  builder.vertex_input_info = init::PipelineVertexInputStateCreateInfo();
+
+  builder.input_assembly = init::PipelineInputAssemblyStateCreateInfo(
+      VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+
+  builder.viewport.x = 0.f;
+  builder.viewport.y = 0.f;
+  builder.viewport.width = static_cast<float>(swapchain_extent_.width);
+  builder.viewport.height = static_cast<float>(swapchain_extent_.height);
+  builder.viewport.minDepth = 0.f;
+  builder.viewport.maxDepth = 1.f;
+
+  builder.scissor.offset = {0, 0};
+  builder.scissor.extent = swapchain_extent_;
+
+  builder.rasterizer =
+      init::PipelineRasterizationStateCreateInfo(VK_POLYGON_MODE_FILL);
+
+  builder.multisampling = init::PipelineMultisampleStateCreateInfo();
+
+  builder.color_blend_attachment = init::PipelineColorBlendAttachmentState();
+
+  builder.layout = triangle_pipeline_layout_;
+
+  std::optional<VkPipeline> maybe_pipeline =
+      builder.Build(device_, renderpass_);
+  if (!maybe_pipeline.has_value()) {
+    return false;
+  }
+  deletion_stack_.Push(
+      [=]() { vkDestroyPipeline(device_, triangle_pipeline_, nullptr); });
+  triangle_pipeline_ = maybe_pipeline.value();
+
+  return true;
 }
 
 };  // namespace vk

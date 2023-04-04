@@ -147,11 +147,33 @@
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="renderer.cpp" />
+    <ClCompile Include="shader.cpp" />
+    <ClCompile Include="vk_init.cpp" />
     <ClCompile Include="task_stack.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="renderer.hpp" />
+    <ClInclude Include="shader.hpp" />
+    <ClInclude Include="vk_init.hpp" />
     <ClInclude Include="task_stack.hpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="shaders\triangle.vert">
+      <FileType>Document</FileType>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(VULKAN_SDK)\Bin\glslangValidator.exe -V -o "$(OutDir)\shaders\%(Filename)%(Extension).spv" "%(FullPath)"</Command>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(OutDir)\shaders\%(Filename)%(Extension).spv</Outputs>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(VULKAN_SDK)\Bin\glslangValidator.exe -V -o "$(OutDir)\shaders\%(Filename)%(Extension).spv" "%(FullPath)"</Command>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(OutDir)\shaders\%(Filename)%(Extension).spv</Outputs>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="shaders\triangle.frag">
+      <FileType>Document</FileType>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(VULKAN_SDK)\Bin\glslangValidator.exe -V -o "$(OutDir)\shaders\%(Filename)%(Extension).spv" "%(FullPath)"</Command>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(VULKAN_SDK)\Bin\glslangValidator.exe -V -o "$(OutDir)\shaders\%(Filename)%(Extension).spv" "%(FullPath)"</Command>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(OutDir)\shaders\%(Filename)%(Extension).spv</Outputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(OutDir)\shaders\%(Filename)%(Extension).spv</Outputs>
+    </CustomBuild>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

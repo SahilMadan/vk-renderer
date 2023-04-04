@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -31,6 +32,21 @@ class Renderer {
   int framenumber() { return framenumber_; }
 
  private:
+  struct PipelineBuilder {
+    std::vector<VkPipelineShaderStageCreateInfo> shader_stages;
+    VkPipelineVertexInputStateCreateInfo vertex_input_info;
+    VkPipelineInputAssemblyStateCreateInfo input_assembly;
+    VkViewport viewport;
+    VkRect2D scissor;
+    VkPipelineRasterizationStateCreateInfo rasterizer;
+    VkPipelineColorBlendAttachmentState color_blend_attachment;
+    VkPipelineMultisampleStateCreateInfo multisampling;
+    VkPipelineLayout layout;
+
+    std::optional<VkPipeline> Build(VkDevice device, VkRenderPass renderpass);
+  };
+
+  bool InitPipeline();
   bool initialized_ = false;
   int framenumber_ = 0;
 
@@ -62,6 +78,9 @@ class Renderer {
   VkSemaphore render_semaphore_;
   // Used for GPU to CPU communication.
   VkFence render_fence_;
+
+  VkPipelineLayout triangle_pipeline_layout_;
+  VkPipeline triangle_pipeline_;
 
   util::TaskStack deletion_stack_;
 };
