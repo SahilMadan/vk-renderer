@@ -35,7 +35,7 @@ int main(int argc, char *argv[]) {
 
   // Create a window
   SDL_Window *window = SDL_CreateWindow(
-      "SDL2 Example", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+      "vk-renderer", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
       kWindowWidth, kWindowHeight, SDL_WINDOW_SHOWN | SDL_WINDOW_VULKAN);
 
   unsigned int extension_count = 0;
