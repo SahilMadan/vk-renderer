@@ -48,5 +48,7 @@
   <ItemGroup>
     <CustomBuild Include="shaders\triangle.vert" />
     <CustomBuild Include="shaders\triangle.frag" />
+    <CustomBuild Include="shaders\colored_triangle.vert" />
+    <CustomBuild Include="shaders\colored_triangle.frag" />
   </ItemGroup>
 </Project>

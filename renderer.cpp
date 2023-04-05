@@ -533,7 +533,9 @@ bool Renderer::Init(InitParams params) {
   deletion_stack_.Push(
       [=]() { vkDestroySemaphore(device_, present_semaphore_, nullptr); });
 
-  InitPipeline();
+  if (!InitPipeline()) {
+    return false;
+  }
 
   // Everything is initialized.
   initialized_ = true;
@@ -602,8 +604,13 @@ void Renderer::Draw() {
   vkCmdBeginRenderPass(command_buffer_, &renderpass_info,
                        VK_SUBPASS_CONTENTS_INLINE);
 
-  vkCmdBindPipeline(command_buffer_, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    triangle_pipeline_);
+  if (selected_shader_ == 0) {
+    vkCmdBindPipeline(command_buffer_, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      triangle_pipeline_);
+  } else {
+    vkCmdBindPipeline(command_buffer_, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      colored_triangle_pipeline_);
+  }
   vkCmdDraw(command_buffer_, 3, 1, 0, 0);
 
   vkCmdEndRenderPass(command_buffer_);
@@ -764,11 +771,50 @@ bool Renderer::InitPipeline() {
   if (!maybe_pipeline.has_value()) {
     return false;
   }
+  triangle_pipeline_ = maybe_pipeline.value();
   deletion_stack_.Push(
       [=]() { vkDestroyPipeline(device_, triangle_pipeline_, nullptr); });
-  triangle_pipeline_ = maybe_pipeline.value();
+
+  // Colored triangle:
+
+  VkShaderModule colored_triangle_vert;
+  if (!LoadShader(device_, "shaders/colored_triangle.vert.spv",
+                  &colored_triangle_vert)) {
+    std::cerr << "Unable to load file: colored_triangle.vert.spv" << std::endl;
+    return false;
+  }
+  deletion_stack_.Push([=]() {
+    vkDestroyShaderModule(device_, colored_triangle_vert, nullptr);
+  });
+
+  VkShaderModule colored_triangle_frag;
+  if (!LoadShader(device_, "shaders/colored_triangle.frag.spv",
+                  &colored_triangle_frag)) {
+    std::cerr << "Unable to load file: colored_triangle.frag.spv" << std::endl;
+    return false;
+  }
+  deletion_stack_.Push([=]() {
+    vkDestroyShaderModule(device_, colored_triangle_frag, nullptr);
+  });
+
+  builder.shader_stages.clear();
+  builder.shader_stages.push_back(init::PipelineShaderStageCreateInfo(
+      VK_SHADER_STAGE_VERTEX_BIT, colored_triangle_vert));
+  builder.shader_stages.push_back(init::PipelineShaderStageCreateInfo(
+      VK_SHADER_STAGE_FRAGMENT_BIT, colored_triangle_frag));
+
+  maybe_pipeline = builder.Build(device_, renderpass_);
+  if (!maybe_pipeline.has_value()) {
+    return false;
+  }
+  colored_triangle_pipeline_ = maybe_pipeline.value();
+  deletion_stack_.Push([=]() {
+    vkDestroyPipeline(device_, colored_triangle_pipeline_, nullptr);
+  });
 
   return true;
 }
+
+void Renderer::ToggleShader() { selected_shader_ = (selected_shader_ + 1) % 2; }
 
 };  // namespace vk

@@ -31,6 +31,9 @@ class Renderer {
   bool initialized() { return initialized_; }
   int framenumber() { return framenumber_; }
 
+  // Temporary:
+  void ToggleShader();
+
  private:
   struct PipelineBuilder {
     std::vector<VkPipelineShaderStageCreateInfo> shader_stages;
@@ -81,8 +84,12 @@ class Renderer {
 
   VkPipelineLayout triangle_pipeline_layout_;
   VkPipeline triangle_pipeline_;
+  VkPipeline colored_triangle_pipeline_;
 
   util::TaskStack deletion_stack_;
+
+  // Temporary:
+  int selected_shader_ = 0;
 };
 
 }  // namespace vk
