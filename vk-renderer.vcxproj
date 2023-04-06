@@ -77,11 +77,11 @@
     <IncludePath>$(VC_IncludePath);$(WindowsSDK_IncludePath);$(ProjectDir)\third_party\SDL2-2.26.4\include;</IncludePath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <IncludePath>$(VC_IncludePath);$(WindowsSDK_IncludePath);$(ProjectDir)\third_party\SDL2-2.26.4\include;$(VULKAN_SDK)\Include</IncludePath>
+    <IncludePath>$(VC_IncludePath);$(WindowsSDK_IncludePath);$(ProjectDir)\third_party\glm;$(ProjectDir)\third_party\SDL2-2.26.4\include;$(ProjectDir)\third_party\vma\include;$(VULKAN_SDK)\Include</IncludePath>
     <LibraryPath>$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64);$(ProjectDir)\third_party\SDL2-2.26.4\lib\x64;$(VULKAN_SDK)\Lib</LibraryPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <IncludePath>$(VC_IncludePath);$(WindowsSDK_IncludePath);$(ProjectDir)\third_party\SDL2-2.26.4\include;$(VULKAN_SDK)\Include</IncludePath>
+    <IncludePath>$(VC_IncludePath);$(WindowsSDK_IncludePath);$(ProjectDir)\third_party\glm;$(ProjectDir)\third_party\SDL2-2.26.4\include;$(ProjectDir)\third_party\vma\include;$(VULKAN_SDK)\Include</IncludePath>
     <LibraryPath>$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64);$(ProjectDir)\third_party\SDL2-2.26.4\lib\x64;$(VULKAN_SDK)\Lib</LibraryPath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
@@ -150,12 +150,15 @@
     <ClCompile Include="shader.cpp" />
     <ClCompile Include="vk_init.cpp" />
     <ClCompile Include="task_stack.cpp" />
+    <ClCompile Include="vk_mesh.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="renderer.hpp" />
     <ClInclude Include="shader.hpp" />
     <ClInclude Include="vk_init.hpp" />
     <ClInclude Include="task_stack.hpp" />
+    <ClInclude Include="vk_mesh.hpp" />
+    <ClInclude Include="vk_types.hpp" />
   </ItemGroup>
   <ItemGroup>
     <CustomBuild Include="shaders\triangle.vert">
@@ -184,6 +187,15 @@
       <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(OutDir)\shaders\%(Filename)%(Extension).spv</Outputs>
     </CustomBuild>
     <CustomBuild Include="shaders\colored_triangle.vert">
+      <FileType>Document</FileType>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(VULKAN_SDK)\Bin\glslangValidator.exe -V -o "$(OutDir)\shaders\%(Filename)%(Extension).spv" "%(FullPath)"</Command>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(VULKAN_SDK)\Bin\glslangValidator.exe -V -o "$(OutDir)\shaders\%(Filename)%(Extension).spv" "%(FullPath)"</Command>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(OutDir)\shaders\%(Filename)%(Extension).spv</Outputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(OutDir)\shaders\%(Filename)%(Extension).spv</Outputs>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="shaders\mesh_triangle.vert">
       <FileType>Document</FileType>
       <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(VULKAN_SDK)\Bin\glslangValidator.exe -V -o "$(OutDir)\shaders\%(Filename)%(Extension).spv" "%(FullPath)"</Command>
       <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(VULKAN_SDK)\Bin\glslangValidator.exe -V -o "$(OutDir)\shaders\%(Filename)%(Extension).spv" "%(FullPath)"</Command>

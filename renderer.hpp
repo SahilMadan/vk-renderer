@@ -4,9 +4,11 @@
 #include <string>
 #include <vector>
 #define VK_USE_PLATFORM_WIN32_KHR
+#include <vk_mem_alloc.h>
 #include <vulkan/vulkan.h>
 
 #include "task_stack.hpp"
+#include "vk_mesh.hpp"
 
 namespace vk {
 
@@ -50,6 +52,9 @@ class Renderer {
   };
 
   bool InitPipeline();
+  bool LoadMeshes();
+  bool UploadMesh(Mesh& mesh);
+
   bool initialized_ = false;
   int framenumber_ = 0;
 
@@ -85,11 +90,15 @@ class Renderer {
   VkPipelineLayout triangle_pipeline_layout_;
   VkPipeline triangle_pipeline_;
   VkPipeline colored_triangle_pipeline_;
+  VkPipeline mesh_pipeline_;
+
+  VmaAllocator allocator_;
 
   util::TaskStack deletion_stack_;
 
   // Temporary:
   int selected_shader_ = 0;
+  Mesh triangle_mesh_;
 };
 
 }  // namespace vk

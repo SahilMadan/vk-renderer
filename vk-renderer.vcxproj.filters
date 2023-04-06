@@ -30,6 +30,9 @@
     <ClCompile Include="vk_init.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="vk_mesh.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="renderer.hpp">
@@ -44,11 +47,18 @@
     <ClInclude Include="vk_init.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="vk_types.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="vk_mesh.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <CustomBuild Include="shaders\triangle.vert" />
     <CustomBuild Include="shaders\triangle.frag" />
     <CustomBuild Include="shaders\colored_triangle.vert" />
     <CustomBuild Include="shaders\colored_triangle.frag" />
+    <CustomBuild Include="shaders\mesh_triangle.vert" />
   </ItemGroup>
 </Project>

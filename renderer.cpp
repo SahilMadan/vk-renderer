@@ -1,5 +1,8 @@
 #include "renderer.hpp"
 
+#define VMA_IMPLEMENTATION
+#include <vk_mem_alloc.h>
+
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -332,6 +335,14 @@ bool Renderer::Init(InitParams params) {
   }
   deletion_stack_.Push([&]() { vkDestroyDevice(device_, nullptr); });
 
+  // Initialize memory allocator.
+  VmaAllocatorCreateInfo allocator_info = {};
+  allocator_info.physicalDevice = gpu_;
+  allocator_info.device = device_;
+  allocator_info.instance = instance_;
+  vmaCreateAllocator(&allocator_info, &allocator_);
+  deletion_stack_.Push([&]() { vmaDestroyAllocator(allocator_); });
+
   // Initialize the graphics queue.
   vkGetDeviceQueue(device_, graphics_queue_family_, 0, &graphics_queue_);
 
@@ -537,6 +548,10 @@ bool Renderer::Init(InitParams params) {
     return false;
   }
 
+  if (!LoadMeshes()) {
+    return false;
+  }
+
   // Everything is initialized.
   initialized_ = true;
 }
@@ -604,14 +619,25 @@ void Renderer::Draw() {
   vkCmdBeginRenderPass(command_buffer_, &renderpass_info,
                        VK_SUBPASS_CONTENTS_INLINE);
 
+  int vertex_count = 0;
   if (selected_shader_ == 0) {
     vkCmdBindPipeline(command_buffer_, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       triangle_pipeline_);
-  } else {
+    vertex_count = 3;
+  } else if (selected_shader_ == 1) {
     vkCmdBindPipeline(command_buffer_, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       colored_triangle_pipeline_);
+    vertex_count = 3;
+  } else {
+    vkCmdBindPipeline(command_buffer_, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      mesh_pipeline_);
+    VkDeviceSize offset = 0;
+    vkCmdBindVertexBuffers(command_buffer_, 0, 1, &triangle_mesh_.buffer.buffer,
+                           &offset);
+    vertex_count = triangle_mesh_.vertices.size();
   }
-  vkCmdDraw(command_buffer_, 3, 1, 0, 0);
+
+  vkCmdDraw(command_buffer_, vertex_count, 1, 0, 0);
 
   vkCmdEndRenderPass(command_buffer_);
   if (vkEndCommandBuffer(command_buffer_) != VK_SUCCESS) {
@@ -714,16 +740,11 @@ bool Renderer::InitPipeline() {
     std::cerr << "Unable to load file: triangle.vert.spv" << std::endl;
     return false;
   }
-  deletion_stack_.Push(
-      [=]() { vkDestroyShaderModule(device_, triangle_vert, nullptr); });
-
   VkShaderModule triangle_frag;
   if (!LoadShader(device_, "shaders/triangle.frag.spv", &triangle_frag)) {
     std::cerr << "Unable to load file: triangle.frag.spv" << std::endl;
     return false;
   }
-  deletion_stack_.Push(
-      [=]() { vkDestroyShaderModule(device_, triangle_frag, nullptr); });
 
   VkPipelineLayoutCreateInfo pipeline_layout_info =
       init::PipelineLayoutCreateInfo();
@@ -775,6 +796,9 @@ bool Renderer::InitPipeline() {
   deletion_stack_.Push(
       [=]() { vkDestroyPipeline(device_, triangle_pipeline_, nullptr); });
 
+  vkDestroyShaderModule(device_, triangle_vert, nullptr);
+  vkDestroyShaderModule(device_, triangle_frag, nullptr);
+
   // Colored triangle:
 
   VkShaderModule colored_triangle_vert;
@@ -783,19 +807,12 @@ bool Renderer::InitPipeline() {
     std::cerr << "Unable to load file: colored_triangle.vert.spv" << std::endl;
     return false;
   }
-  deletion_stack_.Push([=]() {
-    vkDestroyShaderModule(device_, colored_triangle_vert, nullptr);
-  });
-
   VkShaderModule colored_triangle_frag;
   if (!LoadShader(device_, "shaders/colored_triangle.frag.spv",
                   &colored_triangle_frag)) {
     std::cerr << "Unable to load file: colored_triangle.frag.spv" << std::endl;
     return false;
   }
-  deletion_stack_.Push([=]() {
-    vkDestroyShaderModule(device_, colored_triangle_frag, nullptr);
-  });
 
   builder.shader_stages.clear();
   builder.shader_stages.push_back(init::PipelineShaderStageCreateInfo(
@@ -812,9 +829,100 @@ bool Renderer::InitPipeline() {
     vkDestroyPipeline(device_, colored_triangle_pipeline_, nullptr);
   });
 
+  vkDestroyShaderModule(device_, colored_triangle_vert, nullptr);
+
+  // Mesh pipeline:
+
+  VertexInputDescription vertex_description = Vertex::GetDescription();
+
+  // Connect the pipeline builder vertex input info to the one from the vertex.
+  builder.vertex_input_info.vertexAttributeDescriptionCount =
+      vertex_description.attributes.size();
+  builder.vertex_input_info.pVertexAttributeDescriptions =
+      vertex_description.attributes.data();
+
+  builder.vertex_input_info.vertexBindingDescriptionCount =
+      vertex_description.bindings.size();
+  builder.vertex_input_info.pVertexBindingDescriptions =
+      vertex_description.bindings.data();
+
+  VkShaderModule mesh_triangle_vert;
+  if (!LoadShader(device_, "shaders/mesh_triangle.vert.spv",
+                  &mesh_triangle_vert)) {
+    std::cerr << "Unable to load file: mesh_triangle.vert.spv" << std::endl;
+    return false;
+  }
+
+  builder.shader_stages.clear();
+  builder.shader_stages.push_back(init::PipelineShaderStageCreateInfo(
+      VK_SHADER_STAGE_VERTEX_BIT, mesh_triangle_vert));
+  builder.shader_stages.push_back(init::PipelineShaderStageCreateInfo(
+      VK_SHADER_STAGE_FRAGMENT_BIT, colored_triangle_frag));
+
+  maybe_pipeline = builder.Build(device_, renderpass_);
+  if (!maybe_pipeline.has_value()) {
+    return false;
+  }
+
+  mesh_pipeline_ = maybe_pipeline.value();
+  deletion_stack_.Push(
+      [=]() { vkDestroyPipeline(device_, mesh_pipeline_, nullptr); });
+
+  vkDestroyShaderModule(device_, mesh_triangle_vert, nullptr);
+  vkDestroyShaderModule(device_, colored_triangle_frag, nullptr);
+
   return true;
 }
 
-void Renderer::ToggleShader() { selected_shader_ = (selected_shader_ + 1) % 2; }
+void Renderer::ToggleShader() { selected_shader_ = (selected_shader_ + 1) % 3; }
+
+bool Renderer::LoadMeshes() {
+  triangle_mesh_.vertices.resize(3);
+
+  // Vertex positions.
+  triangle_mesh_.vertices[0].position = {1.f, 1.f, 0.f};
+  triangle_mesh_.vertices[1].position = {-1.f, 1.f, 0.f};
+  triangle_mesh_.vertices[2].position = {0.f, -1.f, 0.f};
+
+  // Vertex colors.
+  triangle_mesh_.vertices[0].color = {0.f, 1.f, 0.f};
+  triangle_mesh_.vertices[1].color = {0.f, 1.f, 0.f};
+  triangle_mesh_.vertices[2].color = {0.f, 1.f, 0.f};
+
+  // Note: We don't care about vertex normals yet.
+
+  return UploadMesh(triangle_mesh_);
+}
+
+bool Renderer::UploadMesh(Mesh& mesh) {
+  // Allocate vertex buffer.
+  VkBufferCreateInfo buffer_info = {};
+  buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  buffer_info.pNext = nullptr;
+
+  buffer_info.size = mesh.vertices.size() * sizeof(Vertex);
+  buffer_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+
+  VmaAllocationCreateInfo allocation_info = {};
+  allocation_info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
+
+  if (vmaCreateBuffer(allocator_, &buffer_info, &allocation_info,
+                      &mesh.buffer.buffer, &mesh.buffer.allocation,
+                      nullptr) != VK_SUCCESS) {
+    return false;
+  }
+
+  deletion_stack_.Push([=]() {
+    vmaDestroyBuffer(allocator_, mesh.buffer.buffer, mesh.buffer.allocation);
+  });
+
+  // Copy vertex data.
+  void* data;
+  vmaMapMemory(allocator_, mesh.buffer.allocation, &data);
+  memcpy(data, mesh.vertices.data(), mesh.vertices.size() * sizeof(Vertex));
+  vmaUnmapMemory(allocator_, mesh.buffer.allocation);
+
+  return true;
+}
 
 };  // namespace vk
