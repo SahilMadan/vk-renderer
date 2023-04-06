@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <glm/gtx/transform.hpp>
 #include <iostream>
 #include <optional>
 #include <unordered_set>
@@ -635,6 +636,22 @@ void Renderer::Draw() {
     vkCmdBindVertexBuffers(command_buffer_, 0, 1, &triangle_mesh_.buffer.buffer,
                            &offset);
     vertex_count = triangle_mesh_.vertices.size();
+
+    // Push constants.
+    glm::vec3 camera_position = {0.f, 0.f, -2.0f};
+    glm::mat4 view = glm::translate(glm::mat4(1.f), camera_position);
+    glm::mat4 projection =
+        glm::perspective(glm::radians(70.f), 1700.f / 900.f, 0.1f, 200.f);
+    glm::mat4 model = glm::rotate(
+        glm::mat4(1.f), glm::radians(framenumber_ * 0.4f), glm::vec3(0, 1, 0));
+    glm::mat4 mesh_matrix = projection * view * model;
+
+    MeshPushConstants constants;
+    constants.matrix = mesh_matrix;
+
+    vkCmdPushConstants(command_buffer_, mesh_pipeline_layout_,
+                       VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstants),
+                       &constants);
   }
 
   vkCmdDraw(command_buffer_, vertex_count, 1, 0, 0);
@@ -832,6 +849,27 @@ bool Renderer::InitPipeline() {
   vkDestroyShaderModule(device_, colored_triangle_vert, nullptr);
 
   // Mesh pipeline:
+
+  VkPipelineLayoutCreateInfo mesh_pipeline_layout_info =
+      init::PipelineLayoutCreateInfo();
+
+  VkPushConstantRange push_constant;
+  push_constant.offset = 0;
+  push_constant.size = sizeof(MeshPushConstants);
+  push_constant.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+  mesh_pipeline_layout_info.pushConstantRangeCount = 1;
+  mesh_pipeline_layout_info.pPushConstantRanges = &push_constant;
+
+  if (vkCreatePipelineLayout(device_, &mesh_pipeline_layout_info, nullptr,
+                             &mesh_pipeline_layout_) != VK_SUCCESS) {
+    return false;
+  }
+  deletion_stack_.Push([=]() {
+    vkDestroyPipelineLayout(device_, mesh_pipeline_layout_, nullptr);
+  });
+
+  builder.layout = mesh_pipeline_layout_;
 
   VertexInputDescription vertex_description = Vertex::GetDescription();
 

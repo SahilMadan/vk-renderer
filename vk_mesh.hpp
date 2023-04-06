@@ -1,7 +1,9 @@
 #pragma once
 
 #include <array>
+#include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
+#include <glm/vec4.hpp>
 #include <vector>
 
 #include "vk_types.hpp"
@@ -26,6 +28,11 @@ struct Vertex {
 struct Mesh {
   std::vector<Vertex> vertices;
   AllocatedBuffer buffer;
+};
+
+struct MeshPushConstants {
+  glm::vec4 data;
+  glm::mat4 matrix;
 };
 
 }  // namespace vk

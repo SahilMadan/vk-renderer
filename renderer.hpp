@@ -90,6 +90,8 @@ class Renderer {
   VkPipelineLayout triangle_pipeline_layout_;
   VkPipeline triangle_pipeline_;
   VkPipeline colored_triangle_pipeline_;
+
+  VkPipelineLayout mesh_pipeline_layout_;
   VkPipeline mesh_pipeline_;
 
   VmaAllocator allocator_;

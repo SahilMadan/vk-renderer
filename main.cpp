@@ -2,6 +2,7 @@
 #include <SDL_syswm.h>
 #include <SDL_vulkan.h>
 
+#include <cmath>
 #include <iostream>
 #include <vector>
 
@@ -16,6 +17,8 @@ void MainLoop() {
   SDL_Event e;
   bool quit = false;
   while (!quit) {
+    Uint64 start = SDL_GetPerformanceCounter();
+
     while (SDL_PollEvent(&e) != 0) {
       if (e.type == SDL_QUIT) {
         quit = true;
@@ -26,6 +29,14 @@ void MainLoop() {
       }
     }
     renderer.Draw();
+
+    Uint64 end = SDL_GetPerformanceCounter();
+
+    // Hacky method of controlling rendering time by capping at 60FPS.
+    float elapsed_millisecs =
+        (end - start) /
+        static_cast<float>(SDL_GetPerformanceFrequency() * 1000.f);
+    SDL_Delay(std::floor(16.666f - elapsed_millisecs));
   }
 }
 
