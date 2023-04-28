@@ -33,14 +33,12 @@ class Renderer {
   bool initialized() { return initialized_; }
   int framenumber() { return framenumber_; }
 
-  // Temporary:
-  void ToggleShader();
-
  private:
   struct PipelineBuilder {
     std::vector<VkPipelineShaderStageCreateInfo> shader_stages;
     VkPipelineVertexInputStateCreateInfo vertex_input_info;
     VkPipelineInputAssemblyStateCreateInfo input_assembly;
+    VkPipelineDepthStencilStateCreateInfo depth_stencil;
     VkViewport viewport;
     VkRect2D scissor;
     VkPipelineRasterizationStateCreateInfo rasterizer;
@@ -87,20 +85,18 @@ class Renderer {
   // Used for GPU to CPU communication.
   VkFence render_fence_;
 
-  VkPipelineLayout triangle_pipeline_layout_;
-  VkPipeline triangle_pipeline_;
-  VkPipeline colored_triangle_pipeline_;
-
   VkPipelineLayout mesh_pipeline_layout_;
   VkPipeline mesh_pipeline_;
+
+  VkImageView depth_image_view_;
+  AllocatedImage depth_image_;
+  VkFormat depth_format_;
 
   VmaAllocator allocator_;
 
   util::TaskStack deletion_stack_;
 
-  // Temporary:
-  int selected_shader_ = 0;
-  Mesh triangle_mesh_;
+  std::vector<Mesh> shiba_mesh_;
 };
 
 }  // namespace vk

@@ -22,10 +22,6 @@ void MainLoop() {
     while (SDL_PollEvent(&e) != 0) {
       if (e.type == SDL_QUIT) {
         quit = true;
-      } else if (e.type == SDL_KEYDOWN) {
-        if (e.key.keysym.sym == SDLK_SPACE) {
-          renderer.ToggleShader();
-        }
       }
     }
     renderer.Draw();

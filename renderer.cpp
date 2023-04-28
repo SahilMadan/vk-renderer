@@ -402,6 +402,36 @@ bool Renderer::Init(InitParams params) {
   vkGetSwapchainImagesKHR(device_, swapchain_, &swapchain_image_count,
                           swapchain_images_.data());
 
+  // Initialize the depth image.
+  VkExtent3D depth_image_extent = {swapchain_extent_.width,
+                                   swapchain_extent_.height, 1};
+  depth_format_ = VK_FORMAT_D32_SFLOAT;
+
+  VkImageCreateInfo depth_image_info = init::ImageCreateInfo(
+      depth_format_, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+      depth_image_extent);
+
+  VmaAllocationCreateInfo depth_allocation_info = {};
+  depth_allocation_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+  depth_allocation_info.requiredFlags =
+      VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+  vmaCreateImage(allocator_, &depth_image_info, &depth_allocation_info,
+                 &depth_image_.image, &depth_image_.allocation, nullptr);
+  deletion_stack_.Push([=]() {
+    vmaDestroyImage(allocator_, depth_image_.image, depth_image_.allocation);
+  });
+
+  VkImageViewCreateInfo depth_image_view_info = init::ImageViewCreateInfo(
+      depth_format_, depth_image_.image, VK_IMAGE_ASPECT_DEPTH_BIT);
+
+  if (vkCreateImageView(device_, &depth_image_view_info, nullptr,
+                        &depth_image_view_) != VK_SUCCESS) {
+    return false;
+  }
+  deletion_stack_.Push(
+      [=]() { vkDestroyImageView(device_, depth_image_view_, nullptr); });
+
   // Initialize the Image Views.
   VkImageViewCreateInfo image_view_info = {};
   image_view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -472,18 +502,59 @@ bool Renderer::Init(InitParams params) {
   color_attachment_ref.attachment = 0;
   color_attachment_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
+  VkAttachmentDescription depth_attachment = {};
+  depth_attachment.flags = 0;
+  depth_attachment.format = depth_format_;
+  depth_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+  depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  depth_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  depth_attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  depth_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  depth_attachment.finalLayout =
+      VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+  VkAttachmentReference depth_attachment_ref = {};
+  depth_attachment_ref.attachment = 1;
+  depth_attachment_ref.layout =
+      VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
   VkSubpassDescription subpass = {};
   subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
   subpass.colorAttachmentCount = 1;
   subpass.pColorAttachments = &color_attachment_ref;
+  subpass.pDepthStencilAttachment = &depth_attachment_ref;
+
+  VkAttachmentDescription attachments[2] = {color_attachment, depth_attachment};
+
+  VkSubpassDependency color_dependency = {};
+  color_dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+  color_dependency.dstSubpass = 0;
+  color_dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  color_dependency.srcAccessMask = 0;
+  color_dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  color_dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+  VkSubpassDependency depth_dependency = {};
+  depth_dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+  depth_dependency.dstSubpass = 0;
+  depth_dependency.srcStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                                  VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+  depth_dependency.dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                                  VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+  depth_dependency.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+  VkSubpassDependency dependencies[2] = {color_dependency, depth_dependency};
 
   VkRenderPassCreateInfo renderpass_info = {};
   renderpass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
   renderpass_info.pNext = nullptr;
-  renderpass_info.attachmentCount = 1;
-  renderpass_info.pAttachments = &color_attachment;
+  renderpass_info.attachmentCount = 2;
+  renderpass_info.pAttachments = &attachments[0];
   renderpass_info.subpassCount = 1;
   renderpass_info.pSubpasses = &subpass;
+  renderpass_info.dependencyCount = 2;
+  renderpass_info.pDependencies = &dependencies[0];
 
   if (vkCreateRenderPass(device_, &renderpass_info, nullptr, &renderpass_)) {
     return false;
@@ -504,7 +575,13 @@ bool Renderer::Init(InitParams params) {
 
   framebuffers_.resize(swapchain_image_count);
   for (int i = 0; i < swapchain_image_count; i++) {
-    framebuffer_info.pAttachments = &swapchain_image_views_[i];
+    VkImageView attachments[2];
+    attachments[0] = swapchain_image_views_[i];
+    attachments[1] = depth_image_view_;
+
+    framebuffer_info.attachmentCount = 2;
+    framebuffer_info.pAttachments = attachments;
+
     if (vkCreateFramebuffer(device_, &framebuffer_info, nullptr,
                             &framebuffers_[i])) {
       return false;
@@ -601,8 +678,11 @@ void Renderer::Draw() {
     return;
   }
 
-  VkClearValue clear_value;
-  clear_value.color = {{0.1f, 0.2f, 0.3f, 1.0f}};
+  VkClearValue color_value;
+  color_value.color = {{0.1f, 0.2f, 0.3f, 1.0f}};
+
+  VkClearValue depth_value;
+  depth_value.depthStencil.depth = 1.f;
 
   VkRenderPassBeginInfo renderpass_info = {};
   renderpass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -614,48 +694,47 @@ void Renderer::Draw() {
   renderpass_info.renderArea.extent = swapchain_extent_;
   renderpass_info.framebuffer = framebuffers_[swapchain_image_index];
 
-  renderpass_info.clearValueCount = 1;
-  renderpass_info.pClearValues = &clear_value;
+  VkClearValue clear_values[2] = {color_value, depth_value};
+
+  renderpass_info.clearValueCount = 2;
+  renderpass_info.pClearValues = &clear_values[0];
 
   vkCmdBeginRenderPass(command_buffer_, &renderpass_info,
                        VK_SUBPASS_CONTENTS_INLINE);
 
-  int vertex_count = 0;
-  if (selected_shader_ == 0) {
-    vkCmdBindPipeline(command_buffer_, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                      triangle_pipeline_);
-    vertex_count = 3;
-  } else if (selected_shader_ == 1) {
-    vkCmdBindPipeline(command_buffer_, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                      colored_triangle_pipeline_);
-    vertex_count = 3;
-  } else {
-    vkCmdBindPipeline(command_buffer_, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                      mesh_pipeline_);
-    VkDeviceSize offset = 0;
-    vkCmdBindVertexBuffers(command_buffer_, 0, 1, &triangle_mesh_.buffer.buffer,
+  vkCmdBindPipeline(command_buffer_, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    mesh_pipeline_);
+  VkDeviceSize offset = 0;
+
+  // Push constants.
+  glm::vec3 camera_position = {0.f, 0.f, -2.0f};
+  glm::mat4 view = glm::translate(glm::mat4(1.f), camera_position);
+  glm::mat4 projection =
+      glm::perspective(glm::radians(70.f), 1700.f / 900.f, 0.1f, 200.f);
+  projection[1][1] *= -1;
+  glm::mat4 model = glm::rotate(
+      glm::mat4(1.f), glm::radians(framenumber_ * 0.4f), glm::vec3(0, 1, 0));
+  glm::mat4 mesh_matrix = projection * view * model;
+
+  MeshPushConstants constants;
+  constants.matrix = mesh_matrix;
+
+  vkCmdPushConstants(command_buffer_, mesh_pipeline_layout_,
+                     VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstants),
+                     &constants);
+
+  for (Mesh& m : shiba_mesh_) {
+    vkCmdBindVertexBuffers(command_buffer_, 0, 1, &m.vertex_buffer.buffer,
                            &offset);
-    vertex_count = triangle_mesh_.vertices.size();
+    vkCmdBindIndexBuffer(command_buffer_, m.index_buffer.buffer, 0,
+                         VK_INDEX_TYPE_UINT32);
 
-    // Push constants.
-    glm::vec3 camera_position = {0.f, 0.f, -2.0f};
-    glm::mat4 view = glm::translate(glm::mat4(1.f), camera_position);
-    glm::mat4 projection =
-        glm::perspective(glm::radians(70.f), 1700.f / 900.f, 0.1f, 200.f);
-    projection[1][1] *= -1;
-    glm::mat4 model = glm::rotate(
-        glm::mat4(1.f), glm::radians(framenumber_ * 0.4f), glm::vec3(0, 1, 0));
-    glm::mat4 mesh_matrix = projection * view * model;
+    int vertex_count = m.vertices.size();
 
-    MeshPushConstants constants;
-    constants.matrix = mesh_matrix;
-
-    vkCmdPushConstants(command_buffer_, mesh_pipeline_layout_,
-                       VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstants),
-                       &constants);
+    // vkCmdDraw(command_buffer_, vertex_count, 1, 0, 0);
+    vkCmdDrawIndexed(command_buffer_, static_cast<uint32_t>(m.indices.size()),
+                     1, 0, 0, 0);
   }
-
-  vkCmdDraw(command_buffer_, vertex_count, 1, 0, 0);
 
   vkCmdEndRenderPass(command_buffer_);
   if (vkEndCommandBuffer(command_buffer_) != VK_SUCCESS) {
@@ -743,6 +822,7 @@ std::optional<VkPipeline> Renderer::PipelineBuilder::Build(
   pipeline_info.renderPass = renderpass;
   pipeline_info.subpass = 0;
   pipeline_info.basePipelineHandle = VK_NULL_HANDLE;
+  pipeline_info.pDepthStencilState = &depth_stencil;
 
   VkPipeline pipeline;
   if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_info,
@@ -753,38 +833,15 @@ std::optional<VkPipeline> Renderer::PipelineBuilder::Build(
 }
 
 bool Renderer::InitPipeline() {
-  VkShaderModule triangle_vert;
-  if (!LoadShader(device_, "shaders/triangle.vert.spv", &triangle_vert)) {
-    std::cerr << "Unable to load file: triangle.vert.spv" << std::endl;
-    return false;
-  }
-  VkShaderModule triangle_frag;
-  if (!LoadShader(device_, "shaders/triangle.frag.spv", &triangle_frag)) {
-    std::cerr << "Unable to load file: triangle.frag.spv" << std::endl;
-    return false;
-  }
-
-  VkPipelineLayoutCreateInfo pipeline_layout_info =
-      init::PipelineLayoutCreateInfo();
-  if (vkCreatePipelineLayout(device_, &pipeline_layout_info, nullptr,
-                             &triangle_pipeline_layout_) != VK_SUCCESS) {
-    return false;
-  }
-  deletion_stack_.Push([=]() {
-    vkDestroyPipelineLayout(device_, triangle_pipeline_layout_, nullptr);
-  });
-
   PipelineBuilder builder;
-
-  builder.shader_stages.push_back(init::PipelineShaderStageCreateInfo(
-      VK_SHADER_STAGE_VERTEX_BIT, triangle_vert));
-  builder.shader_stages.push_back(init::PipelineShaderStageCreateInfo(
-      VK_SHADER_STAGE_FRAGMENT_BIT, triangle_frag));
 
   builder.vertex_input_info = init::PipelineVertexInputStateCreateInfo();
 
   builder.input_assembly = init::PipelineInputAssemblyStateCreateInfo(
       VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+
+  builder.depth_stencil = init::PipelineDepthStencilStateCreateInfo(
+      true, true, VK_COMPARE_OP_LESS_OR_EQUAL);
 
   builder.viewport.x = 0.f;
   builder.viewport.y = 0.f;
@@ -802,54 +859,6 @@ bool Renderer::InitPipeline() {
   builder.multisampling = init::PipelineMultisampleStateCreateInfo();
 
   builder.color_blend_attachment = init::PipelineColorBlendAttachmentState();
-
-  builder.layout = triangle_pipeline_layout_;
-
-  std::optional<VkPipeline> maybe_pipeline =
-      builder.Build(device_, renderpass_);
-  if (!maybe_pipeline.has_value()) {
-    return false;
-  }
-  triangle_pipeline_ = maybe_pipeline.value();
-  deletion_stack_.Push(
-      [=]() { vkDestroyPipeline(device_, triangle_pipeline_, nullptr); });
-
-  vkDestroyShaderModule(device_, triangle_vert, nullptr);
-  vkDestroyShaderModule(device_, triangle_frag, nullptr);
-
-  // Colored triangle:
-
-  VkShaderModule colored_triangle_vert;
-  if (!LoadShader(device_, "shaders/colored_triangle.vert.spv",
-                  &colored_triangle_vert)) {
-    std::cerr << "Unable to load file: colored_triangle.vert.spv" << std::endl;
-    return false;
-  }
-  VkShaderModule colored_triangle_frag;
-  if (!LoadShader(device_, "shaders/colored_triangle.frag.spv",
-                  &colored_triangle_frag)) {
-    std::cerr << "Unable to load file: colored_triangle.frag.spv" << std::endl;
-    return false;
-  }
-
-  builder.shader_stages.clear();
-  builder.shader_stages.push_back(init::PipelineShaderStageCreateInfo(
-      VK_SHADER_STAGE_VERTEX_BIT, colored_triangle_vert));
-  builder.shader_stages.push_back(init::PipelineShaderStageCreateInfo(
-      VK_SHADER_STAGE_FRAGMENT_BIT, colored_triangle_frag));
-
-  maybe_pipeline = builder.Build(device_, renderpass_);
-  if (!maybe_pipeline.has_value()) {
-    return false;
-  }
-  colored_triangle_pipeline_ = maybe_pipeline.value();
-  deletion_stack_.Push([=]() {
-    vkDestroyPipeline(device_, colored_triangle_pipeline_, nullptr);
-  });
-
-  vkDestroyShaderModule(device_, colored_triangle_vert, nullptr);
-
-  // Mesh pipeline:
 
   VkPipelineLayoutCreateInfo mesh_pipeline_layout_info =
       init::PipelineLayoutCreateInfo();
@@ -885,20 +894,25 @@ bool Renderer::InitPipeline() {
   builder.vertex_input_info.pVertexBindingDescriptions =
       vertex_description.bindings.data();
 
-  VkShaderModule mesh_triangle_vert;
-  if (!LoadShader(device_, "shaders/mesh_triangle.vert.spv",
-                  &mesh_triangle_vert)) {
+  VkShaderModule mesh_vert;
+  if (!LoadShader(device_, "shaders/mesh_triangle.vert.spv", &mesh_vert)) {
     std::cerr << "Unable to load file: mesh_triangle.vert.spv" << std::endl;
+    return false;
+  }
+  VkShaderModule mesh_frag;
+  if (!LoadShader(device_, "shaders/colored_triangle.frag.spv", &mesh_frag)) {
+    std::cerr << "Unable to load file: colored_triangle.frag.spv" << std::endl;
     return false;
   }
 
   builder.shader_stages.clear();
   builder.shader_stages.push_back(init::PipelineShaderStageCreateInfo(
-      VK_SHADER_STAGE_VERTEX_BIT, mesh_triangle_vert));
+      VK_SHADER_STAGE_VERTEX_BIT, mesh_vert));
   builder.shader_stages.push_back(init::PipelineShaderStageCreateInfo(
-      VK_SHADER_STAGE_FRAGMENT_BIT, colored_triangle_frag));
+      VK_SHADER_STAGE_FRAGMENT_BIT, mesh_frag));
 
-  maybe_pipeline = builder.Build(device_, renderpass_);
+  std::optional<VkPipeline> maybe_pipeline =
+      builder.Build(device_, renderpass_);
   if (!maybe_pipeline.has_value()) {
     return false;
   }
@@ -907,30 +921,23 @@ bool Renderer::InitPipeline() {
   deletion_stack_.Push(
       [=]() { vkDestroyPipeline(device_, mesh_pipeline_, nullptr); });
 
-  vkDestroyShaderModule(device_, mesh_triangle_vert, nullptr);
-  vkDestroyShaderModule(device_, colored_triangle_frag, nullptr);
+  vkDestroyShaderModule(device_, mesh_vert, nullptr);
+  vkDestroyShaderModule(device_, mesh_frag, nullptr);
 
   return true;
 }
 
-void Renderer::ToggleShader() { selected_shader_ = (selected_shader_ + 1) % 3; }
-
 bool Renderer::LoadMeshes() {
-  triangle_mesh_.vertices.resize(3);
+  shiba_mesh_ = LoadFromFile("assets/models/shiba/scene.gltf");
+  if (shiba_mesh_.empty()) {
+    return false;
+  }
 
-  // Vertex positions.
-  triangle_mesh_.vertices[0].position = {1.f, 1.f, 0.f};
-  triangle_mesh_.vertices[1].position = {-1.f, 1.f, 0.f};
-  triangle_mesh_.vertices[2].position = {0.f, -1.f, 0.f};
+  for (Mesh& m : shiba_mesh_) {
+    UploadMesh(m);
+  }
 
-  // Vertex colors.
-  triangle_mesh_.vertices[0].color = {0.f, 1.f, 0.f};
-  triangle_mesh_.vertices[1].color = {0.f, 1.f, 0.f};
-  triangle_mesh_.vertices[2].color = {0.f, 1.f, 0.f};
-
-  // Note: We don't care about vertex normals yet.
-
-  return UploadMesh(triangle_mesh_);
+  return true;
 }
 
 bool Renderer::UploadMesh(Mesh& mesh) {
@@ -946,20 +953,46 @@ bool Renderer::UploadMesh(Mesh& mesh) {
   allocation_info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
 
   if (vmaCreateBuffer(allocator_, &buffer_info, &allocation_info,
-                      &mesh.buffer.buffer, &mesh.buffer.allocation,
-                      nullptr) != VK_SUCCESS) {
+                      &mesh.vertex_buffer.buffer,
+                      &mesh.vertex_buffer.allocation, nullptr) != VK_SUCCESS) {
     return false;
   }
 
   deletion_stack_.Push([=]() {
-    vmaDestroyBuffer(allocator_, mesh.buffer.buffer, mesh.buffer.allocation);
+    vmaDestroyBuffer(allocator_, mesh.vertex_buffer.buffer,
+                     mesh.vertex_buffer.allocation);
   });
 
   // Copy vertex data.
   void* data;
-  vmaMapMemory(allocator_, mesh.buffer.allocation, &data);
+  vmaMapMemory(allocator_, mesh.vertex_buffer.allocation, &data);
   memcpy(data, mesh.vertices.data(), mesh.vertices.size() * sizeof(Vertex));
-  vmaUnmapMemory(allocator_, mesh.buffer.allocation);
+  vmaUnmapMemory(allocator_, mesh.vertex_buffer.allocation);
+
+  if (mesh.indices.empty()) {
+    return true;
+  }
+
+  VkBufferCreateInfo index_buffer_info = {};
+  index_buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  index_buffer_info.pNext = nullptr;
+
+  index_buffer_info.size = mesh.indices.size() * sizeof(uint32_t);
+  index_buffer_info.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+
+  if (vmaCreateBuffer(allocator_, &index_buffer_info, &allocation_info,
+                      &mesh.index_buffer.buffer, &mesh.index_buffer.allocation,
+                      nullptr) != VK_SUCCESS) {
+    return false;
+  }
+  deletion_stack_.Push([=]() {
+    vmaDestroyBuffer(allocator_, mesh.index_buffer.buffer,
+                     mesh.index_buffer.allocation);
+  });
+
+  vmaMapMemory(allocator_, mesh.index_buffer.allocation, &data);
+  memcpy(data, mesh.indices.data(), mesh.indices.size() * sizeof(uint32_t));
+  vmaUnmapMemory(allocator_, mesh.index_buffer.allocation);
 
   return true;
 }

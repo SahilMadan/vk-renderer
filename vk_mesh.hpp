@@ -27,12 +27,16 @@ struct Vertex {
 
 struct Mesh {
   std::vector<Vertex> vertices;
-  AllocatedBuffer buffer;
+  std::vector<uint32_t> indices;
+  AllocatedBuffer vertex_buffer;
+  AllocatedBuffer index_buffer;
 };
 
 struct MeshPushConstants {
   glm::vec4 data;
   glm::mat4 matrix;
 };
+
+std::vector<Mesh> LoadFromFile(const char* filename);
 
 }  // namespace vk
