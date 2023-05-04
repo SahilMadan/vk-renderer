@@ -630,6 +630,8 @@ bool Renderer::Init(InitParams params) {
     return false;
   }
 
+  InitScene();
+
   // Everything is initialized.
   initialized_ = true;
 }
@@ -702,39 +704,7 @@ void Renderer::Draw() {
   vkCmdBeginRenderPass(command_buffer_, &renderpass_info,
                        VK_SUBPASS_CONTENTS_INLINE);
 
-  vkCmdBindPipeline(command_buffer_, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    mesh_pipeline_);
-  VkDeviceSize offset = 0;
-
-  // Push constants.
-  glm::vec3 camera_position = {0.f, 0.f, -2.0f};
-  glm::mat4 view = glm::translate(glm::mat4(1.f), camera_position);
-  glm::mat4 projection =
-      glm::perspective(glm::radians(70.f), 1700.f / 900.f, 0.1f, 200.f);
-  projection[1][1] *= -1;
-  glm::mat4 model = glm::rotate(
-      glm::mat4(1.f), glm::radians(framenumber_ * 0.4f), glm::vec3(0, 1, 0));
-  glm::mat4 mesh_matrix = projection * view * model;
-
-  MeshPushConstants constants;
-  constants.matrix = mesh_matrix;
-
-  vkCmdPushConstants(command_buffer_, mesh_pipeline_layout_,
-                     VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstants),
-                     &constants);
-
-  for (Mesh& m : shiba_mesh_) {
-    vkCmdBindVertexBuffers(command_buffer_, 0, 1, &m.vertex_buffer.buffer,
-                           &offset);
-    vkCmdBindIndexBuffer(command_buffer_, m.index_buffer.buffer, 0,
-                         VK_INDEX_TYPE_UINT32);
-
-    int vertex_count = m.vertices.size();
-
-    // vkCmdDraw(command_buffer_, vertex_count, 1, 0, 0);
-    vkCmdDrawIndexed(command_buffer_, static_cast<uint32_t>(m.indices.size()),
-                     1, 0, 0, 0);
-  }
+  DrawObjects(command_buffer_, renderables_.data(), renderables_.size());
 
   vkCmdEndRenderPass(command_buffer_);
   if (vkEndCommandBuffer(command_buffer_) != VK_SUCCESS) {
@@ -921,6 +891,8 @@ bool Renderer::InitPipeline() {
   deletion_stack_.Push(
       [=]() { vkDestroyPipeline(device_, mesh_pipeline_, nullptr); });
 
+  CreateMaterial(mesh_pipeline_, mesh_pipeline_layout_, "default");
+
   vkDestroyShaderModule(device_, mesh_vert, nullptr);
   vkDestroyShaderModule(device_, mesh_frag, nullptr);
 
@@ -928,13 +900,38 @@ bool Renderer::InitPipeline() {
 }
 
 bool Renderer::LoadMeshes() {
+  triangle_mesh_.vertices.resize(3);
+
+  // Vertex positions.
+  triangle_mesh_.vertices[0].position = {1.f, 1.f, 0.f};
+  triangle_mesh_.vertices[1].position = {-1.f, 1.f, 0.f};
+  triangle_mesh_.vertices[2].position = {0.f, -1.f, 0.f};
+
+  // Vertex colors.
+  triangle_mesh_.vertices[0].color = {0.f, 1.f, 0.f};
+  triangle_mesh_.vertices[1].color = {0.f, 1.f, 0.f};
+  triangle_mesh_.vertices[2].color = {0.f, 1.f, 0.f};
+
+  // Note: We don't care about vertex normals yet.
+
+  if (!UploadMesh(triangle_mesh_)) {
+    return false;
+  }
+
+  meshes_["triangle"] = triangle_mesh_;
+
   shiba_mesh_ = LoadFromFile("assets/models/shiba/scene.gltf");
   if (shiba_mesh_.empty()) {
     return false;
   }
 
+  int count = 1;
   for (Mesh& m : shiba_mesh_) {
-    UploadMesh(m);
+    if (!UploadMesh(m)) {
+      return false;
+    }
+    std::string name = "shiba_" + std::to_string(count++);
+    meshes_[name] = m;
   }
 
   return true;
@@ -995,6 +992,118 @@ bool Renderer::UploadMesh(Mesh& mesh) {
   vmaUnmapMemory(allocator_, mesh.index_buffer.allocation);
 
   return true;
+}
+
+Renderer::Material* Renderer::CreateMaterial(VkPipeline pipeline,
+                                             VkPipelineLayout layout,
+                                             const std::string& name) {
+  Material material;
+  material.pipeline = pipeline;
+  material.pipeline_layout = layout;
+  materials_[name] = material;
+
+  return &materials_[name];
+}
+
+Renderer::Material* Renderer::GetMaterial(const std::string& name) {
+  auto it = materials_.find(name);
+  if (it == materials_.end()) {
+    return nullptr;
+  }
+
+  return &(*it).second;
+}
+
+Mesh* Renderer::GetMesh(const std::string& name) {
+  auto it = meshes_.find(name);
+  if (it == meshes_.end()) {
+    return nullptr;
+  }
+
+  return &(*it).second;
+}
+
+void Renderer::DrawObjects(VkCommandBuffer cmd, RenderObject* first,
+                           int count) {
+  glm::vec3 camera_position = {0.f, -6.f, -10.f};
+
+  glm::mat4 view = glm::translate(glm::mat4(1.f), camera_position);
+
+  glm::mat4 projection =
+      glm::perspective(glm::radians(70.f),
+                       static_cast<float>(swapchain_extent_.width) /
+                           static_cast<float>(swapchain_extent_.height),
+                       0.1f, 200.0f);
+  projection[1][1] *= -1;
+
+  Mesh* last_mesh = nullptr;
+  Material* last_material = nullptr;
+
+  for (int i = 0; i < count; i++) {
+    RenderObject& object = first[i];
+    // Only bind the pipeline if it doesn't match the one already bound.
+    if (object.material != last_material) {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        object.material->pipeline);
+      last_material = object.material;
+    }
+
+    glm::mat4 model = object.transform;
+
+    glm::mat4 matrix = projection * view * model;
+
+    MeshPushConstants constants;
+    constants.matrix = matrix;
+    vkCmdPushConstants(cmd, object.material->pipeline_layout,
+                       VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstants),
+                       &constants);
+
+    const bool is_indexed_draw = !object.mesh->indices.empty();
+
+    if (object.mesh != last_mesh) {
+      VkDeviceSize offset = 0;
+      vkCmdBindVertexBuffers(cmd, 0, 1, &object.mesh->vertex_buffer.buffer,
+                             &offset);
+      if (is_indexed_draw) {
+        vkCmdBindIndexBuffer(cmd, object.mesh->index_buffer.buffer, 0,
+                             VK_INDEX_TYPE_UINT32);
+      }
+    }
+
+    if (is_indexed_draw) {
+      vkCmdDrawIndexed(cmd, static_cast<uint32_t>(object.mesh->indices.size()),
+                       1, 0, 0, 0);
+    } else {
+      vkCmdDraw(cmd, static_cast<uint32_t>(object.mesh->vertices.size()), 1, 0,
+                0);
+    }
+  }
+}
+
+void Renderer::InitScene() {
+  for (int i = 1; i <= 3; i++) {
+    RenderObject shiba;
+    shiba.mesh = GetMesh("shiba_" + std::to_string(i));
+    shiba.material = GetMaterial("default");
+    shiba.transform = glm::mat4{1.f};
+
+    renderables_.push_back(shiba);
+  }
+
+  for (int x = -20; x <= 20; x++) {
+    for (int z = -20; z <= 20; z++) {
+      RenderObject triangle;
+      triangle.mesh = GetMesh("triangle");
+      triangle.material = GetMaterial("default");
+
+      glm::mat4 translation =
+          glm::translate(glm::mat4{1.f}, glm::vec3(x, 0, z));
+      glm::mat4 scale = glm::scale(glm::mat4{1.f}, glm::vec3(.2f, .2f, .2f));
+      triangle.transform = translation * scale;
+
+      renderables_.push_back(triangle);
+    }
+  }
 }
 
 };  // namespace vk

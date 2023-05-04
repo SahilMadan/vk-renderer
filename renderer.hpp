@@ -3,6 +3,8 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <unordered_map>
+
 #define VK_USE_PLATFORM_WIN32_KHR
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan.h>
@@ -49,9 +51,35 @@ class Renderer {
     std::optional<VkPipeline> Build(VkDevice device, VkRenderPass renderpass);
   };
 
+  struct Material {
+    VkPipeline pipeline;
+    VkPipelineLayout pipeline_layout;
+  };
+
+  struct RenderObject {
+    Mesh* mesh;
+    Material* material;
+    glm::mat4 transform;
+  };
+
   bool InitPipeline();
+
+  void InitScene();
+
   bool LoadMeshes();
   bool UploadMesh(Mesh& mesh);
+
+  Material* CreateMaterial(VkPipeline pipeline, VkPipelineLayout layout,
+                      const std::string& name);
+
+  Material* GetMaterial(const std::string& name);
+  Mesh* GetMesh(const std::string& name);
+
+  void DrawObjects(VkCommandBuffer cmd, RenderObject* first, int count);
+
+  std::vector<RenderObject> renderables_;
+  std::unordered_map<std::string, Material> materials_;
+  std::unordered_map<std::string, Mesh> meshes_;
 
   bool initialized_ = false;
   int framenumber_ = 0;
@@ -96,6 +124,7 @@ class Renderer {
 
   util::TaskStack deletion_stack_;
 
+  Mesh triangle_mesh_;
   std::vector<Mesh> shiba_mesh_;
 };
 
