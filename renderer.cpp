@@ -468,23 +468,24 @@ bool Renderer::Init(InitParams params) {
 
   command_pool_info.queueFamilyIndex = graphics_queue_family_;
   command_pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-  if (vkCreateCommandPool(device_, &command_pool_info, nullptr,
-                          &command_pool_) != VK_SUCCESS) {
-    return false;
-  }
-  deletion_stack_.Push(
-      [=]() { vkDestroyCommandPool(device_, command_pool_, nullptr); });
 
-  VkCommandBufferAllocateInfo allocate_info = {};
-  allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-  allocate_info.pNext = nullptr;
-  allocate_info.commandPool = command_pool_;
-  allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-  allocate_info.commandBufferCount = 1;
+  for (int i = 0; i < kFrameOverlap; i++) {
+    if (vkCreateCommandPool(device_, &command_pool_info, nullptr,
+                            &frames_[i].command_pool) != VK_SUCCESS) {
+      return false;
+    }
 
-  if (vkAllocateCommandBuffers(device_, &allocate_info, &command_buffer_) !=
-      VK_SUCCESS) {
-    return false;
+    deletion_stack_.Push([=]() {
+      vkDestroyCommandPool(device_, frames_[i].command_pool, nullptr);
+    });
+
+    VkCommandBufferAllocateInfo allocate_info =
+        init::CommandBufferAllocateInfo(frames_[i].command_pool, 1);
+
+    if (vkAllocateCommandBuffers(device_, &allocate_info,
+                                 &frames_[i].command_buffer) != VK_SUCCESS) {
+      return false;
+    }
   }
 
   // Initialize the default renderpass.
@@ -591,36 +592,38 @@ bool Renderer::Init(InitParams params) {
   }
 
   // Create synchronization structures.
-  VkFenceCreateInfo fence_info = {};
-  fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-  fence_info.pNext = nullptr;
-  fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+  for (int i = 0; i < kFrameOverlap; i++) {
+    VkFenceCreateInfo fence_info =
+        init::FenceCreateInfo(VK_FENCE_CREATE_SIGNALED_BIT);
 
-  if (vkCreateFence(device_, &fence_info, nullptr, &render_fence_) !=
-      VK_SUCCESS) {
-    return false;
+    if (vkCreateFence(device_, &fence_info, nullptr,
+                      &frames_[i].render_fence) != VK_SUCCESS) {
+      return false;
+    }
+
+    deletion_stack_.Push(
+        [=]() { vkDestroyFence(device_, frames_[i].render_fence, nullptr); });
+
+    VkSemaphoreCreateInfo semaphore_info = init::SemaphoreCreateInfo();
+
+    if (vkCreateSemaphore(device_, &semaphore_info, nullptr,
+                          &frames_[i].render_semaphore)) {
+      return false;
+    }
+
+    deletion_stack_.Push([=]() {
+      vkDestroySemaphore(device_, frames_[i].render_semaphore, nullptr);
+    });
+
+    if (vkCreateSemaphore(device_, &semaphore_info, nullptr,
+                          &frames_[i].present_semaphore)) {
+      return false;
+    }
+
+    deletion_stack_.Push([=]() {
+      vkDestroySemaphore(device_, frames_[i].present_semaphore, nullptr);
+    });
   }
-  deletion_stack_.Push(
-      [=]() { vkDestroyFence(device_, render_fence_, nullptr); });
-
-  VkSemaphoreCreateInfo semaphore_info = {};
-  semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-  semaphore_info.pNext = nullptr;
-  semaphore_info.flags = 0;
-
-  if (vkCreateSemaphore(device_, &semaphore_info, nullptr,
-                        &render_semaphore_)) {
-    return false;
-  }
-  deletion_stack_.Push(
-      [=]() { vkDestroySemaphore(device_, render_semaphore_, nullptr); });
-
-  if (vkCreateSemaphore(device_, &semaphore_info, nullptr,
-                        &present_semaphore_)) {
-    return false;
-  }
-  deletion_stack_.Push(
-      [=]() { vkDestroySemaphore(device_, present_semaphore_, nullptr); });
 
   if (!InitPipeline()) {
     return false;
@@ -637,10 +640,12 @@ bool Renderer::Init(InitParams params) {
 }
 
 void Renderer::Shutdown() {
-  if (vkGetFenceStatus(device_, render_fence_) &&
-      vkWaitForFences(device_, 1, &render_fence_, true, kTimeoutNanoSecs) !=
-          VK_SUCCESS) {
-    return;
+  for (int i = 0; i < kFrameOverlap; i++) {
+    if (vkGetFenceStatus(device_, frames_[i].render_fence) &&
+        vkWaitForFences(device_, 1, &frames_[i].render_fence, true,
+                        kTimeoutNanoSecs) != VK_SUCCESS) {
+      return;
+    }
   }
   deletion_stack_.Flush();
 }
@@ -648,25 +653,27 @@ void Renderer::Shutdown() {
 void Renderer::Draw() {
   // TODO: Handle errors gracefully.
 
+  FrameData& frame = GetFrame();
+
   // Wait until the GPU has finished rendering the last frame.
-  if (vkWaitForFences(device_, 1, &render_fence_, true, kTimeoutNanoSecs) !=
-      VK_SUCCESS) {
+  if (vkWaitForFences(device_, 1, &frame.render_fence, true,
+                      kTimeoutNanoSecs) != VK_SUCCESS) {
     return;
   }
-  if (vkResetFences(device_, 1, &render_fence_) != VK_SUCCESS) {
+  if (vkResetFences(device_, 1, &frame.render_fence) != VK_SUCCESS) {
     return;
   }
 
   // Request an image from the swapchain.
   uint32_t swapchain_image_index;
   if (vkAcquireNextImageKHR(device_, swapchain_, kTimeoutNanoSecs,
-                            present_semaphore_, nullptr,
+                            frame.present_semaphore, nullptr,
                             &swapchain_image_index) != VK_SUCCESS) {
     return;
   }
 
   // Now we can safely reset the command buffer.
-  if (vkResetCommandBuffer(command_buffer_, 0) != VK_SUCCESS) {
+  if (vkResetCommandBuffer(frame.command_buffer, 0) != VK_SUCCESS) {
     return;
   }
 
@@ -676,7 +683,7 @@ void Renderer::Draw() {
   begin_info.pInheritanceInfo = nullptr;
   begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-  if (vkBeginCommandBuffer(command_buffer_, &begin_info) != VK_SUCCESS) {
+  if (vkBeginCommandBuffer(frame.command_buffer, &begin_info) != VK_SUCCESS) {
     return;
   }
 
@@ -701,13 +708,13 @@ void Renderer::Draw() {
   renderpass_info.clearValueCount = 2;
   renderpass_info.pClearValues = &clear_values[0];
 
-  vkCmdBeginRenderPass(command_buffer_, &renderpass_info,
+  vkCmdBeginRenderPass(frame.command_buffer, &renderpass_info,
                        VK_SUBPASS_CONTENTS_INLINE);
 
-  DrawObjects(command_buffer_, renderables_.data(), renderables_.size());
+  DrawObjects(frame.command_buffer, renderables_.data(), renderables_.size());
 
-  vkCmdEndRenderPass(command_buffer_);
-  if (vkEndCommandBuffer(command_buffer_) != VK_SUCCESS) {
+  vkCmdEndRenderPass(frame.command_buffer);
+  if (vkEndCommandBuffer(frame.command_buffer) != VK_SUCCESS) {
     return;
   }
 
@@ -722,15 +729,16 @@ void Renderer::Draw() {
   submit.pWaitDstStageMask = &wait_stage;
 
   submit.waitSemaphoreCount = 1;
-  submit.pWaitSemaphores = &present_semaphore_;
+  submit.pWaitSemaphores = &frame.present_semaphore;
 
   submit.signalSemaphoreCount = 1;
-  submit.pSignalSemaphores = &render_semaphore_;
+  submit.pSignalSemaphores = &frame.render_semaphore;
 
   submit.commandBufferCount = 1;
-  submit.pCommandBuffers = &command_buffer_;
+  submit.pCommandBuffers = &frame.command_buffer;
 
-  if (vkQueueSubmit(graphics_queue_, 1, &submit, render_fence_) != VK_SUCCESS) {
+  if (vkQueueSubmit(graphics_queue_, 1, &submit, frame.render_fence) !=
+      VK_SUCCESS) {
     return;
   }
 
@@ -742,7 +750,7 @@ void Renderer::Draw() {
   present_info.pSwapchains = &swapchain_;
 
   present_info.waitSemaphoreCount = 1;
-  present_info.pWaitSemaphores = &render_semaphore_;
+  present_info.pWaitSemaphores = &frame.render_semaphore;
 
   present_info.pImageIndices = &swapchain_image_index;
 
@@ -1104,6 +1112,10 @@ void Renderer::InitScene() {
       renderables_.push_back(triangle);
     }
   }
+}
+
+Renderer::FrameData& Renderer::GetFrame() {
+  return frames_[framenumber_ % kFrameOverlap];
 }
 
 };  // namespace vk

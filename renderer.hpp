@@ -2,8 +2,8 @@
 
 #include <optional>
 #include <string>
-#include <vector>
 #include <unordered_map>
+#include <vector>
 
 #define VK_USE_PLATFORM_WIN32_KHR
 #include <vk_mem_alloc.h>
@@ -62,6 +62,16 @@ class Renderer {
     glm::mat4 transform;
   };
 
+  struct FrameData {
+    VkSemaphore present_semaphore;
+    VkSemaphore render_semaphore;
+    VkFence render_fence;
+    VkCommandPool command_pool;
+    VkCommandBuffer command_buffer;
+  };
+
+  constexpr static unsigned unsigned int kFrameOverlap = 2;
+
   bool InitPipeline();
 
   void InitScene();
@@ -70,10 +80,12 @@ class Renderer {
   bool UploadMesh(Mesh& mesh);
 
   Material* CreateMaterial(VkPipeline pipeline, VkPipelineLayout layout,
-                      const std::string& name);
+                           const std::string& name);
 
   Material* GetMaterial(const std::string& name);
   Mesh* GetMesh(const std::string& name);
+
+  FrameData& GetFrame();
 
   void DrawObjects(VkCommandBuffer cmd, RenderObject* first, int count);
 
@@ -101,8 +113,7 @@ class Renderer {
   std::vector<VkImage> swapchain_images_;
   std::vector<VkImageView> swapchain_image_views_;
 
-  VkCommandPool command_pool_;
-  VkCommandBuffer command_buffer_;
+  FrameData frames_[kFrameOverlap];
 
   VkRenderPass renderpass_;
   std::vector<VkFramebuffer> framebuffers_;

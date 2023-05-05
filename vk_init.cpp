@@ -167,5 +167,37 @@ VkImageViewCreateInfo ImageViewCreateInfo(VkFormat format, VkImage image,
   return info;
 }
 
+VkCommandBufferAllocateInfo CommandBufferAllocateInfo(
+    VkCommandPool command_pool, uint32_t count) {
+  VkCommandBufferAllocateInfo info = {};
+  info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+  info.pNext = nullptr;
+  info.commandPool = command_pool;
+  info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  info.commandBufferCount = count;
+
+  return info;
+}
+
+VkFenceCreateInfo FenceCreateInfo(VkFenceCreateFlags flags) {
+  VkFenceCreateInfo info = {};
+  info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+  info.pNext = nullptr;
+
+  info.flags = flags;
+
+  return info;
+}
+
+VkSemaphoreCreateInfo SemaphoreCreateInfo() {
+  VkSemaphoreCreateInfo info = {};
+  info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+  info.pNext = nullptr;
+
+  info.flags = 0;
+
+  return info;
+}
+
 }  // namespace init
 }  // namespace vk

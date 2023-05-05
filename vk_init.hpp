@@ -32,6 +32,13 @@ VkImageCreateInfo ImageCreateInfo(VkFormat format,
 VkImageViewCreateInfo ImageViewCreateInfo(VkFormat format, VkImage image,
                                           VkImageAspectFlags aspect_flags);
 
+VkCommandBufferAllocateInfo CommandBufferAllocateInfo(
+    VkCommandPool command_pool, uint32_t count);
+
+VkFenceCreateInfo FenceCreateInfo(VkFenceCreateFlags flags);
+
+VkSemaphoreCreateInfo SemaphoreCreateInfo();
+
 };  // namespace init
 
 };  // namespace vk
