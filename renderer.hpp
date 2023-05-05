@@ -63,9 +63,12 @@ class Renderer {
   };
 
   struct FrameData {
+    // GPU <--> GPU sync.
     VkSemaphore present_semaphore;
     VkSemaphore render_semaphore;
+    // GPU --> CPU sync.
     VkFence render_fence;
+
     VkCommandPool command_pool;
     VkCommandBuffer command_buffer;
   };
@@ -117,12 +120,6 @@ class Renderer {
 
   VkRenderPass renderpass_;
   std::vector<VkFramebuffer> framebuffers_;
-
-  // Semaphore used for GPU to GPU sync.
-  VkSemaphore present_semaphore_;
-  VkSemaphore render_semaphore_;
-  // Used for GPU to CPU communication.
-  VkFence render_fence_;
 
   VkPipelineLayout mesh_pipeline_layout_;
   VkPipeline mesh_pipeline_;
