@@ -39,6 +39,14 @@ VkFenceCreateInfo FenceCreateInfo(VkFenceCreateFlags flags);
 
 VkSemaphoreCreateInfo SemaphoreCreateInfo();
 
+VkDescriptorSetLayoutBinding DescriptorSetLayoutBinding(
+    VkDescriptorType type, VkShaderStageFlags stage_flags, uint32_t binding);
+
+VkWriteDescriptorSet WriteDescriptorSet(VkDescriptorType type,
+                                        VkDescriptorSet destination_set,
+                                        VkDescriptorBufferInfo* buffer_info,
+                                        uint32_t binding);
+
 };  // namespace init
 
 };  // namespace vk

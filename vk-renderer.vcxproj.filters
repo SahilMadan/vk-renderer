@@ -60,5 +60,6 @@
     <CustomBuild Include="shaders\colored_triangle.vert" />
     <CustomBuild Include="shaders\colored_triangle.frag" />
     <CustomBuild Include="shaders\mesh_triangle.vert" />
+    <CustomBuild Include="shaders\default_lit.frag" />
   </ItemGroup>
 </Project>

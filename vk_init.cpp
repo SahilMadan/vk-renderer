@@ -199,5 +199,34 @@ VkSemaphoreCreateInfo SemaphoreCreateInfo() {
   return info;
 }
 
+VkDescriptorSetLayoutBinding DescriptorSetLayoutBinding(
+    VkDescriptorType type, VkShaderStageFlags stage_flags, uint32_t binding) {
+  VkDescriptorSetLayoutBinding layout_binding = {};
+  layout_binding.binding = binding;
+  layout_binding.descriptorCount = 1;
+  layout_binding.descriptorType = type;
+  layout_binding.pImmutableSamplers = nullptr;
+  layout_binding.stageFlags = stage_flags;
+
+  return layout_binding;
+}
+
+VkWriteDescriptorSet WriteDescriptorSet(VkDescriptorType type,
+                                        VkDescriptorSet destination_set,
+                                        VkDescriptorBufferInfo* buffer_info,
+                                        uint32_t binding) {
+  VkWriteDescriptorSet write = {};
+  write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  write.pNext = nullptr;
+
+  write.dstBinding = binding;
+  write.dstSet = destination_set;
+  write.descriptorCount = 1;
+  write.descriptorType = type;
+  write.pBufferInfo = buffer_info;
+
+  return write;
+}
+
 }  // namespace init
 }  // namespace vk

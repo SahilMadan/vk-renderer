@@ -62,10 +62,12 @@ class Renderer {
     glm::mat4 transform;
   };
 
-  struct GpuCameraData {
-    glm::mat4 view;
-    glm::mat4 projection;
-    glm::mat4 view_projection;
+  struct GpuSceneData {
+    glm::vec4 fog_color;
+    glm::vec4 fog_distance;
+    glm::vec4 ambient_color;
+    glm::vec4 sunlight_direction;
+    glm::vec4 sunlight_color;
   };
 
   struct FrameData {
@@ -95,6 +97,8 @@ class Renderer {
   bool LoadMeshes();
   bool UploadMesh(Mesh& mesh);
 
+  size_t GetAlignedBufferSize(size_t original_size);
+
   AllocatedBuffer CreateBuffer(size_t allocation_size, VkBufferUsageFlags usage,
                                VmaMemoryUsage memory_usage);
 
@@ -119,6 +123,7 @@ class Renderer {
 
   VkInstance instance_ = VK_NULL_HANDLE;
   VkPhysicalDevice gpu_ = VK_NULL_HANDLE;
+  VkPhysicalDeviceProperties gpu_properties_;
   VkDevice device_ = VK_NULL_HANDLE;
   VkSurfaceKHR surface_ = VK_NULL_HANDLE;
 
@@ -153,6 +158,9 @@ class Renderer {
 
   Mesh triangle_mesh_;
   std::vector<Mesh> shiba_mesh_;
+
+  GpuSceneData scene_parameters_;
+  AllocatedBuffer scene_parameters_buffer_;
 };
 
 }  // namespace vk

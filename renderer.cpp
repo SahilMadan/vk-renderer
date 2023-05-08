@@ -16,6 +16,12 @@
 
 namespace {
 
+struct GpuCameraData {
+  glm::mat4 view;
+  glm::mat4 projection;
+  glm::mat4 view_projection;
+};
+
 constexpr uint64_t kTimeoutNanoSecs = 1000000000;
 
 #ifdef _DEBUG
@@ -79,6 +85,7 @@ struct SwapchainDetails {
 
 struct SelectedDeviceDetails {
   VkPhysicalDevice device;
+  VkPhysicalDeviceProperties properties;
   uint32_t graphics_queue_family;
   SwapchainDetails swapchain_details;
 };
@@ -227,8 +234,13 @@ std::optional<SelectedDeviceDetails> SelectDevice(
     // Unable to find a suitable device.
     return std::nullopt;
   }
+
+  VkPhysicalDeviceProperties properties;
+  vkGetPhysicalDeviceProperties(devices[max_index], &properties);
+
   return std::make_optional<SelectedDeviceDetails>(
-      {devices[max_index], max_queue_family, std::move(max_swapchain_details)});
+      {devices[max_index], properties, max_queue_family,
+       std::move(max_swapchain_details)});
 }
 
 }  // namespace
@@ -297,6 +309,7 @@ bool Renderer::Init(InitParams params) {
   }
   SelectedDeviceDetails& selected_device = maybe_selected_device.value();
   gpu_ = selected_device.device;
+  gpu_properties_ = selected_device.properties;
 
   // Initialize the device queue.
   VkDeviceQueueCreateInfo queue_info = {};
@@ -883,8 +896,8 @@ bool Renderer::InitPipeline() {
     return false;
   }
   VkShaderModule mesh_frag;
-  if (!LoadShader(device_, "shaders/colored_triangle.frag.spv", &mesh_frag)) {
-    std::cerr << "Unable to load file: colored_triangle.frag.spv" << std::endl;
+  if (!LoadShader(device_, "shaders/default_lit.frag.spv", &mesh_frag)) {
+    std::cerr << "Unable to load file: default_lit.frag.spv" << std::endl;
     return false;
   }
 
@@ -921,9 +934,9 @@ bool Renderer::LoadMeshes() {
   triangle_mesh_.vertices[2].position = {0.f, -1.f, 0.f};
 
   // Vertex colors.
-  triangle_mesh_.vertices[0].color = {0.f, 1.f, 0.f};
-  triangle_mesh_.vertices[1].color = {0.f, 1.f, 0.f};
-  triangle_mesh_.vertices[2].color = {0.f, 1.f, 0.f};
+  triangle_mesh_.vertices[0].color = {1.f, 1.f, 1.f};
+  triangle_mesh_.vertices[1].color = {1.f, 1.f, 1.f};
+  triangle_mesh_.vertices[2].color = {1.f, 1.f, 1.f};
 
   // Note: We don't care about vertex normals yet.
 
@@ -1060,6 +1073,19 @@ void Renderer::DrawObjects(VkCommandBuffer cmd, RenderObject* first,
   memcpy(data, &camera_data, sizeof(GpuCameraData));
   vmaUnmapMemory(allocator_, GetFrame().camera_buffer.allocation);
 
+  // Scene data.
+  float framed = framenumber_ / 120.f;
+  scene_parameters_.ambient_color = {sin(framed), 1.f, cos(framed), 1.f};
+  char* scene_data;
+  vmaMapMemory(allocator_, scene_parameters_buffer_.allocation,
+               reinterpret_cast<void**>(&scene_data));
+
+  int frame_index = framenumber_ % kFrameOverlap;
+  scene_data += GetAlignedBufferSize(sizeof(GpuSceneData) * frame_index);
+  memcpy(scene_data, &scene_parameters_, sizeof(GpuSceneData));
+
+  vmaUnmapMemory(allocator_, scene_parameters_buffer_.allocation);
+
   Mesh* last_mesh = nullptr;
   Material* last_material = nullptr;
 
@@ -1147,24 +1173,38 @@ void Renderer::InitDescriptors() {
 
   vkCreateDescriptorPool(device_, &pool_info, nullptr, &descriptor_pool_);
 
-  // Information about the binding.
-  VkDescriptorSetLayoutBinding camera_buffer_binding = {};
-  camera_buffer_binding.binding = 0;
-  camera_buffer_binding.descriptorCount = 1;
-  camera_buffer_binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-  camera_buffer_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+  // Binding for camera/global data at 0.
+  VkDescriptorSetLayoutBinding camera_binding =
+      init::DescriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                       VK_SHADER_STAGE_VERTEX_BIT, 0);
+  // Binding for scene data at 1.
+  VkDescriptorSetLayoutBinding scene_binding = init::DescriptorSetLayoutBinding(
+      VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 1);
+
+  VkDescriptorSetLayoutBinding bindings[] = {camera_binding, scene_binding};
 
   VkDescriptorSetLayoutCreateInfo descriptor_set_info = {};
   descriptor_set_info.sType =
       VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
   descriptor_set_info.pNext = nullptr;
 
-  descriptor_set_info.bindingCount = 1;
   descriptor_set_info.flags = 0;
-  descriptor_set_info.pBindings = &camera_buffer_binding;
+  descriptor_set_info.bindingCount = 2;
+  descriptor_set_info.pBindings = bindings;
 
   vkCreateDescriptorSetLayout(device_, &descriptor_set_info, nullptr,
                               &global_set_layout_);
+
+  const size_t scene_parameters_buffer_size =
+      kFrameOverlap * GetAlignedBufferSize(sizeof(GpuSceneData));
+  scene_parameters_buffer_ = CreateBuffer(scene_parameters_buffer_size,
+                                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                          VMA_MEMORY_USAGE_CPU_TO_GPU);
+  deletion_stack_.Push([&]() {
+    vmaDestroyBuffer(allocator_, scene_parameters_buffer_.buffer,
+                     scene_parameters_buffer_.allocation);
+  });
 
   // Initialize the global camera buffers.
   for (int i = 0; i < kFrameOverlap; i++) {
@@ -1189,23 +1229,27 @@ void Renderer::InitDescriptors() {
     vkAllocateDescriptorSets(device_, &allocate_info,
                              &frames_[i].global_descriptor);
 
-    VkDescriptorBufferInfo buffer_info = {};
-    buffer_info.buffer = frames_[i].camera_buffer.buffer;
-    buffer_info.offset = 0;
-    buffer_info.range = sizeof(GpuCameraData);
+    VkDescriptorBufferInfo camera_info = {};
+    camera_info.buffer = frames_[i].camera_buffer.buffer;
+    camera_info.offset = 0;
+    camera_info.range = sizeof(GpuCameraData);
 
-    VkWriteDescriptorSet set_write = {};
-    set_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    set_write.pNext = nullptr;
+    VkDescriptorBufferInfo scene_info = {};
+    scene_info.buffer = scene_parameters_buffer_.buffer;
+    scene_info.offset = GetAlignedBufferSize(sizeof(GpuSceneData)) * i;
+    scene_info.range = sizeof(GpuSceneData);
 
-    set_write.dstBinding = 0;
-    set_write.dstSet = frames_[i].global_descriptor;
+    VkWriteDescriptorSet camera_write =
+        init::WriteDescriptorSet(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                 frames_[i].global_descriptor, &camera_info, 0);
 
-    set_write.descriptorCount = 1;
-    set_write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    set_write.pBufferInfo = &buffer_info;
+    VkWriteDescriptorSet scene_write =
+        init::WriteDescriptorSet(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                 frames_[i].global_descriptor, &scene_info, 1);
 
-    vkUpdateDescriptorSets(device_, 1, &set_write, 0, nullptr);
+    VkWriteDescriptorSet set_writes[] = {camera_write, scene_write};
+
+    vkUpdateDescriptorSets(device_, 2, set_writes, 0, nullptr);
   }
 
   deletion_stack_.Push([&]() {
@@ -1242,6 +1286,20 @@ AllocatedBuffer Renderer::CreateBuffer(size_t allocation_size,
   }
 
   return buffer;
+}
+
+size_t Renderer::GetAlignedBufferSize(size_t original_size) {
+  // Calculate the required alignment based on minimum device offset alignment.
+  size_t min_alignment = gpu_properties_.limits.minUniformBufferOffsetAlignment;
+  size_t aligned_size = original_size;
+
+  if (min_alignment > 0) {
+    // See:
+    // https://github.com/SaschaWillems/Vulkan/tree/master/examples/dynamicuniformbuffer
+    aligned_size = (aligned_size + min_alignment - 1) & ~(min_alignment - 1);
+  }
+
+  return aligned_size;
 }
 
 };  // namespace vk
