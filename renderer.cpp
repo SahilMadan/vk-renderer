@@ -625,6 +625,8 @@ bool Renderer::Init(InitParams params) {
     });
   }
 
+  InitDescriptors();
+
   if (!InitPipeline()) {
     return false;
   }
@@ -849,6 +851,9 @@ bool Renderer::InitPipeline() {
   mesh_pipeline_layout_info.pushConstantRangeCount = 1;
   mesh_pipeline_layout_info.pPushConstantRanges = &push_constant;
 
+  mesh_pipeline_layout_info.setLayoutCount = 1;
+  mesh_pipeline_layout_info.pSetLayouts = &global_set_layout_;
+
   if (vkCreatePipelineLayout(device_, &mesh_pipeline_layout_info, nullptr,
                              &mesh_pipeline_layout_) != VK_SUCCESS) {
     return false;
@@ -1044,6 +1049,17 @@ void Renderer::DrawObjects(VkCommandBuffer cmd, RenderObject* first,
                        0.1f, 200.0f);
   projection[1][1] *= -1;
 
+  // Fill a GpuCameraData struct.
+  GpuCameraData camera_data;
+  camera_data.projection = projection;
+  camera_data.view = view;
+  camera_data.view_projection = projection * view;
+
+  void* data;
+  vmaMapMemory(allocator_, GetFrame().camera_buffer.allocation, &data);
+  memcpy(data, &camera_data, sizeof(GpuCameraData));
+  vmaUnmapMemory(allocator_, GetFrame().camera_buffer.allocation);
+
   Mesh* last_mesh = nullptr;
   Material* last_material = nullptr;
 
@@ -1054,14 +1070,14 @@ void Renderer::DrawObjects(VkCommandBuffer cmd, RenderObject* first,
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                         object.material->pipeline);
       last_material = object.material;
+      // Bind the descriptor set when changing pipelines.
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                              object.material->pipeline_layout, 0, 1,
+                              &GetFrame().global_descriptor, 0, nullptr);
     }
 
-    glm::mat4 model = object.transform;
-
-    glm::mat4 matrix = projection * view * model;
-
     MeshPushConstants constants;
-    constants.matrix = matrix;
+    constants.matrix = object.transform;
     vkCmdPushConstants(cmd, object.material->pipeline_layout,
                        VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstants),
                        &constants);
@@ -1114,8 +1130,118 @@ void Renderer::InitScene() {
   }
 }
 
+void Renderer::InitDescriptors() {
+  // Create a descriptor pool that will hold 10 uniform buffers.
+  std::vector<VkDescriptorPoolSize> sizes = {
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10},
+  };
+
+  VkDescriptorPoolCreateInfo pool_info = {};
+  pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  pool_info.pNext = nullptr;
+
+  pool_info.flags = 0;
+  pool_info.maxSets = 10;
+  pool_info.poolSizeCount = static_cast<uint32_t>(sizes.size());
+  pool_info.pPoolSizes = sizes.data();
+
+  vkCreateDescriptorPool(device_, &pool_info, nullptr, &descriptor_pool_);
+
+  // Information about the binding.
+  VkDescriptorSetLayoutBinding camera_buffer_binding = {};
+  camera_buffer_binding.binding = 0;
+  camera_buffer_binding.descriptorCount = 1;
+  camera_buffer_binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  camera_buffer_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+  VkDescriptorSetLayoutCreateInfo descriptor_set_info = {};
+  descriptor_set_info.sType =
+      VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  descriptor_set_info.pNext = nullptr;
+
+  descriptor_set_info.bindingCount = 1;
+  descriptor_set_info.flags = 0;
+  descriptor_set_info.pBindings = &camera_buffer_binding;
+
+  vkCreateDescriptorSetLayout(device_, &descriptor_set_info, nullptr,
+                              &global_set_layout_);
+
+  // Initialize the global camera buffers.
+  for (int i = 0; i < kFrameOverlap; i++) {
+    frames_[i].camera_buffer =
+        CreateBuffer(sizeof(GpuCameraData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                     VMA_MEMORY_USAGE_CPU_TO_GPU);
+    // Add buffers to the deletion stack.
+    deletion_stack_.Push([&, i]() {
+      vmaDestroyBuffer(allocator_, frames_[i].camera_buffer.buffer,
+                       frames_[i].camera_buffer.allocation);
+    });
+
+    // Allocate one descriptor set for each frame.
+    VkDescriptorSetAllocateInfo allocate_info = {};
+    allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocate_info.pNext = nullptr;
+
+    allocate_info.descriptorPool = descriptor_pool_;
+    allocate_info.descriptorSetCount = 1;
+    allocate_info.pSetLayouts = &global_set_layout_;
+
+    vkAllocateDescriptorSets(device_, &allocate_info,
+                             &frames_[i].global_descriptor);
+
+    VkDescriptorBufferInfo buffer_info = {};
+    buffer_info.buffer = frames_[i].camera_buffer.buffer;
+    buffer_info.offset = 0;
+    buffer_info.range = sizeof(GpuCameraData);
+
+    VkWriteDescriptorSet set_write = {};
+    set_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    set_write.pNext = nullptr;
+
+    set_write.dstBinding = 0;
+    set_write.dstSet = frames_[i].global_descriptor;
+
+    set_write.descriptorCount = 1;
+    set_write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    set_write.pBufferInfo = &buffer_info;
+
+    vkUpdateDescriptorSets(device_, 1, &set_write, 0, nullptr);
+  }
+
+  deletion_stack_.Push([&]() {
+    vkDestroyDescriptorSetLayout(device_, global_set_layout_, nullptr);
+    vkDestroyDescriptorPool(device_, descriptor_pool_, nullptr);
+  });
+}
+
 Renderer::FrameData& Renderer::GetFrame() {
   return frames_[framenumber_ % kFrameOverlap];
+}
+
+AllocatedBuffer Renderer::CreateBuffer(size_t allocation_size,
+                                       VkBufferUsageFlags usage,
+                                       VmaMemoryUsage memory_usage) {
+  // Allocate the vertex buffer.
+  VkBufferCreateInfo info = {};
+  info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  info.pNext = nullptr;
+
+  info.size = allocation_size;
+  info.usage = usage;
+
+  VmaAllocationCreateInfo vma_allocation_info = {};
+  vma_allocation_info.usage = memory_usage;
+
+  AllocatedBuffer buffer;
+
+  if (vmaCreateBuffer(allocator_, &info, &vma_allocation_info, &buffer.buffer,
+                      &buffer.allocation, nullptr) != VK_SUCCESS) {
+    std::cerr << "Error creating buffer of size: " << allocation_size
+              << std::endl;
+    abort();
+  }
+
+  return buffer;
 }
 
 };  // namespace vk

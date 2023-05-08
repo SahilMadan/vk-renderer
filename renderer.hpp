@@ -62,6 +62,12 @@ class Renderer {
     glm::mat4 transform;
   };
 
+  struct GpuCameraData {
+    glm::mat4 view;
+    glm::mat4 projection;
+    glm::mat4 view_projection;
+  };
+
   struct FrameData {
     // GPU <--> GPU sync.
     VkSemaphore present_semaphore;
@@ -71,6 +77,11 @@ class Renderer {
 
     VkCommandPool command_pool;
     VkCommandBuffer command_buffer;
+
+    // Buffer holding a single GPUCameraData to use when rendering.
+    AllocatedBuffer camera_buffer;
+
+    VkDescriptorSet global_descriptor;
   };
 
   constexpr static unsigned unsigned int kFrameOverlap = 2;
@@ -79,8 +90,13 @@ class Renderer {
 
   void InitScene();
 
+  void InitDescriptors();
+
   bool LoadMeshes();
   bool UploadMesh(Mesh& mesh);
+
+  AllocatedBuffer CreateBuffer(size_t allocation_size, VkBufferUsageFlags usage,
+                               VmaMemoryUsage memory_usage);
 
   Material* CreateMaterial(VkPipeline pipeline, VkPipelineLayout layout,
                            const std::string& name);
@@ -129,6 +145,9 @@ class Renderer {
   VkFormat depth_format_;
 
   VmaAllocator allocator_;
+
+  VkDescriptorSetLayout global_set_layout_;
+  VkDescriptorPool descriptor_pool_;
 
   util::TaskStack deletion_stack_;
 
