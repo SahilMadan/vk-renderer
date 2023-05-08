@@ -1081,7 +1081,9 @@ void Renderer::DrawObjects(VkCommandBuffer cmd, RenderObject* first,
                reinterpret_cast<void**>(&scene_data));
 
   int frame_index = framenumber_ % kFrameOverlap;
-  scene_data += GetAlignedBufferSize(sizeof(GpuSceneData) * frame_index);
+  size_t buffer_offset =
+      GetAlignedBufferSize(sizeof(GpuSceneData)) * frame_index;
+  scene_data += buffer_offset;
   memcpy(scene_data, &scene_parameters_, sizeof(GpuSceneData));
 
   vmaUnmapMemory(allocator_, scene_parameters_buffer_.allocation);
@@ -1096,10 +1098,14 @@ void Renderer::DrawObjects(VkCommandBuffer cmd, RenderObject* first,
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                         object.material->pipeline);
       last_material = object.material;
-      // Bind the descriptor set when changing pipelines.
+
+      uint32_t uniform_offset = buffer_offset;
+      // Bind the descriptor set when changing pipelines. Because we only have
+      // one dynamic offset, we only need to send 1 uniform offset.
       vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                               object.material->pipeline_layout, 0, 1,
-                              &GetFrame().global_descriptor, 0, nullptr);
+                              &GetFrame().global_descriptor, 1,
+                              &uniform_offset);
     }
 
     MeshPushConstants constants;
@@ -1157,9 +1163,11 @@ void Renderer::InitScene() {
 }
 
 void Renderer::InitDescriptors() {
-  // Create a descriptor pool that will hold 10 uniform buffers.
+  // Create a descriptor pool that will hold 10 uniform buffers and 10 dynamic
+  // uniform buffers.
   std::vector<VkDescriptorPoolSize> sizes = {
       {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10},
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 10},
   };
 
   VkDescriptorPoolCreateInfo pool_info = {};
@@ -1179,7 +1187,7 @@ void Renderer::InitDescriptors() {
                                        VK_SHADER_STAGE_VERTEX_BIT, 0);
   // Binding for scene data at 1.
   VkDescriptorSetLayoutBinding scene_binding = init::DescriptorSetLayoutBinding(
-      VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+      VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 1);
 
   VkDescriptorSetLayoutBinding bindings[] = {camera_binding, scene_binding};
@@ -1236,7 +1244,7 @@ void Renderer::InitDescriptors() {
 
     VkDescriptorBufferInfo scene_info = {};
     scene_info.buffer = scene_parameters_buffer_.buffer;
-    scene_info.offset = GetAlignedBufferSize(sizeof(GpuSceneData)) * i;
+    scene_info.offset = 0;  // We're using a dynamic buffer.
     scene_info.range = sizeof(GpuSceneData);
 
     VkWriteDescriptorSet camera_write =
@@ -1244,7 +1252,7 @@ void Renderer::InitDescriptors() {
                                  frames_[i].global_descriptor, &camera_info, 0);
 
     VkWriteDescriptorSet scene_write =
-        init::WriteDescriptorSet(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        init::WriteDescriptorSet(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
                                  frames_[i].global_descriptor, &scene_info, 1);
 
     VkWriteDescriptorSet set_writes[] = {camera_write, scene_write};
