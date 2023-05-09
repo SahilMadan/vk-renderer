@@ -22,6 +22,10 @@ struct GpuCameraData {
   glm::mat4 view_projection;
 };
 
+struct GpuObjectData {
+  glm::mat4 model;
+};
+
 constexpr uint64_t kTimeoutNanoSecs = 1000000000;
 
 #ifdef _DEBUG
@@ -34,7 +38,9 @@ const std::vector<const char*> kValidationLayers = {
     "VK_LAYER_KHRONOS_validation"};
 
 const std::vector<const char*> kDeviceExtensions = {
-    VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+    VK_KHR_SHADER_DRAW_PARAMETERS_EXTENSION_NAME,
+};
 
 bool VerifyValidationLayersSupported(const std::vector<const char*>& layers) {
   uint32_t layer_count;
@@ -210,9 +216,19 @@ std::optional<SelectedDeviceDetails> SelectDevice(
     //  Get device properties.
     VkPhysicalDeviceProperties properties;
     vkGetPhysicalDeviceProperties(device, &properties);
-    VkPhysicalDeviceFeatures features;
-    vkGetPhysicalDeviceFeatures(device, &features);
-    if (!features.geometryShader) continue;
+
+    // We want to support the SPIR-V DrawParameters capability.
+    VkPhysicalDeviceShaderDrawParametersFeatures ext_feature = {};
+    ext_feature.sType =
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES;
+    ext_feature.pNext = nullptr;
+
+    VkPhysicalDeviceFeatures2 features;
+    features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    features.pNext = &ext_feature;
+    vkGetPhysicalDeviceFeatures2(device, &features);
+    if (ext_feature.shaderDrawParameters == VK_FALSE) continue;
+    if (features.features.geometryShader == VK_FALSE) continue;
     if (properties.apiVersion < VK_API_VERSION_1_1) continue;
     // Rate suitability.
     int score = 0;
@@ -864,8 +880,11 @@ bool Renderer::InitPipeline() {
   mesh_pipeline_layout_info.pushConstantRangeCount = 1;
   mesh_pipeline_layout_info.pPushConstantRanges = &push_constant;
 
-  mesh_pipeline_layout_info.setLayoutCount = 1;
-  mesh_pipeline_layout_info.pSetLayouts = &global_set_layout_;
+  VkDescriptorSetLayout set_layouts[] = {global_set_layout_,
+                                         object_set_layout_};
+
+  mesh_pipeline_layout_info.setLayoutCount = 2;
+  mesh_pipeline_layout_info.pSetLayouts = set_layouts;
 
   if (vkCreatePipelineLayout(device_, &mesh_pipeline_layout_info, nullptr,
                              &mesh_pipeline_layout_) != VK_SUCCESS) {
@@ -1088,11 +1107,25 @@ void Renderer::DrawObjects(VkCommandBuffer cmd, RenderObject* first,
 
   vmaUnmapMemory(allocator_, scene_parameters_buffer_.allocation);
 
+  // Object data.
+  void* object_data;
+  vmaMapMemory(allocator_, GetFrame().object_buffer.allocation, &object_data);
+
+  GpuObjectData* object_ssbo = reinterpret_cast<GpuObjectData*>(object_data);
+  for (int i = 0; i < count; i++) {
+    RenderObject& object = first[i];
+    object_ssbo[i].model = object.transform;
+  }
+
+  vmaUnmapMemory(allocator_, GetFrame().object_buffer.allocation);
+
   Mesh* last_mesh = nullptr;
   Material* last_material = nullptr;
 
   for (int i = 0; i < count; i++) {
     RenderObject& object = first[i];
+    assert(object.mesh);
+    assert(object.material);
     // Only bind the pipeline if it doesn't match the one already bound.
     if (object.material != last_material) {
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -1106,6 +1139,10 @@ void Renderer::DrawObjects(VkCommandBuffer cmd, RenderObject* first,
                               object.material->pipeline_layout, 0, 1,
                               &GetFrame().global_descriptor, 1,
                               &uniform_offset);
+
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                              object.material->pipeline_layout, 1, 1,
+                              &GetFrame().object_descriptor, 0, nullptr);
     }
 
     MeshPushConstants constants;
@@ -1128,10 +1165,10 @@ void Renderer::DrawObjects(VkCommandBuffer cmd, RenderObject* first,
 
     if (is_indexed_draw) {
       vkCmdDrawIndexed(cmd, static_cast<uint32_t>(object.mesh->indices.size()),
-                       1, 0, 0, 0);
+                       1, 0, 0, i);
     } else {
       vkCmdDraw(cmd, static_cast<uint32_t>(object.mesh->vertices.size()), 1, 0,
-                0);
+                i);
     }
   }
 }
@@ -1168,6 +1205,7 @@ void Renderer::InitDescriptors() {
   std::vector<VkDescriptorPoolSize> sizes = {
       {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10},
       {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 10},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10},
   };
 
   VkDescriptorPoolCreateInfo pool_info = {};
@@ -1181,7 +1219,9 @@ void Renderer::InitDescriptors() {
 
   vkCreateDescriptorPool(device_, &pool_info, nullptr, &descriptor_pool_);
 
-  // Binding for camera/global data at 0.
+  // Descriptor Set 1:
+
+  // Binding for camera data at 0.
   VkDescriptorSetLayoutBinding camera_binding =
       init::DescriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                                        VK_SHADER_STAGE_VERTEX_BIT, 0);
@@ -1204,6 +1244,25 @@ void Renderer::InitDescriptors() {
   vkCreateDescriptorSetLayout(device_, &descriptor_set_info, nullptr,
                               &global_set_layout_);
 
+  // Descriptor Set 2:
+
+  VkDescriptorSetLayoutBinding object_binding =
+      init::DescriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                       VK_SHADER_STAGE_VERTEX_BIT, 0);
+
+  VkDescriptorSetLayoutCreateInfo descriptor_set_2_info = {};
+  descriptor_set_2_info.sType =
+      VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  descriptor_set_2_info.pNext = nullptr;
+
+  descriptor_set_2_info.flags = 0;
+  descriptor_set_2_info.bindingCount = 1;
+  descriptor_set_2_info.pBindings = &object_binding;
+
+  vkCreateDescriptorSetLayout(device_, &descriptor_set_2_info, nullptr,
+                              &object_set_layout_);
+
+  // Scene buffer:
   const size_t scene_parameters_buffer_size =
       kFrameOverlap * GetAlignedBufferSize(sizeof(GpuSceneData));
   scene_parameters_buffer_ = CreateBuffer(scene_parameters_buffer_size,
@@ -1214,8 +1273,18 @@ void Renderer::InitDescriptors() {
                      scene_parameters_buffer_.allocation);
   });
 
-  // Initialize the global camera buffers.
   for (int i = 0; i < kFrameOverlap; i++) {
+    // Initialize object buffer.
+    const int kMaxObjects = 10'000;
+    frames_[i].object_buffer = CreateBuffer(sizeof(GpuObjectData) * kMaxObjects,
+                                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                            VMA_MEMORY_USAGE_CPU_TO_GPU);
+    deletion_stack_.Push([&, i]() {
+      vmaDestroyBuffer(allocator_, frames_[i].object_buffer.buffer,
+                       frames_[i].object_buffer.allocation);
+    });
+
+    // Initialize camera buffer.
     frames_[i].camera_buffer =
         CreateBuffer(sizeof(GpuCameraData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                      VMA_MEMORY_USAGE_CPU_TO_GPU);
@@ -1237,6 +1306,18 @@ void Renderer::InitDescriptors() {
     vkAllocateDescriptorSets(device_, &allocate_info,
                              &frames_[i].global_descriptor);
 
+    // Allocate the descriptor set that will point to the object buffer.
+    VkDescriptorSetAllocateInfo object_allocate_info = {};
+    object_allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    object_allocate_info.pNext = nullptr;
+
+    object_allocate_info.descriptorPool = descriptor_pool_;
+    object_allocate_info.descriptorSetCount = 1;
+    object_allocate_info.pSetLayouts = &object_set_layout_;
+
+    vkAllocateDescriptorSets(device_, &object_allocate_info,
+                             &frames_[i].object_descriptor);
+
     VkDescriptorBufferInfo camera_info = {};
     camera_info.buffer = frames_[i].camera_buffer.buffer;
     camera_info.offset = 0;
@@ -1247,6 +1328,11 @@ void Renderer::InitDescriptors() {
     scene_info.offset = 0;  // We're using a dynamic buffer.
     scene_info.range = sizeof(GpuSceneData);
 
+    VkDescriptorBufferInfo object_info = {};
+    object_info.buffer = frames_[i].object_buffer.buffer;
+    object_info.offset = 0;
+    object_info.range = sizeof(GpuObjectData) * kMaxObjects;
+
     VkWriteDescriptorSet camera_write =
         init::WriteDescriptorSet(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                                  frames_[i].global_descriptor, &camera_info, 0);
@@ -1255,13 +1341,19 @@ void Renderer::InitDescriptors() {
         init::WriteDescriptorSet(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
                                  frames_[i].global_descriptor, &scene_info, 1);
 
-    VkWriteDescriptorSet set_writes[] = {camera_write, scene_write};
+    VkWriteDescriptorSet object_write =
+        init::WriteDescriptorSet(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                 frames_[i].object_descriptor, &object_info, 0);
 
-    vkUpdateDescriptorSets(device_, 2, set_writes, 0, nullptr);
+    VkWriteDescriptorSet set_writes[] = {camera_write, scene_write,
+                                         object_write};
+
+    vkUpdateDescriptorSets(device_, 3, set_writes, 0, nullptr);
   }
 
   deletion_stack_.Push([&]() {
     vkDestroyDescriptorSetLayout(device_, global_set_layout_, nullptr);
+    vkDestroyDescriptorSetLayout(device_, object_set_layout_, nullptr);
     vkDestroyDescriptorPool(device_, descriptor_pool_, nullptr);
   });
 }

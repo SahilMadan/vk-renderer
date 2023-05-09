@@ -82,8 +82,11 @@ class Renderer {
 
     // Buffer holding a single GPUCameraData to use when rendering.
     AllocatedBuffer camera_buffer;
-
     VkDescriptorSet global_descriptor;
+
+    // Storage buffer for objects.
+    AllocatedBuffer object_buffer;
+    VkDescriptorSet object_descriptor;
   };
 
   constexpr static unsigned unsigned int kFrameOverlap = 2;
@@ -152,6 +155,7 @@ class Renderer {
   VmaAllocator allocator_;
 
   VkDescriptorSetLayout global_set_layout_;
+  VkDescriptorSetLayout object_set_layout_;
   VkDescriptorPool descriptor_pool_;
 
   util::TaskStack deletion_stack_;
