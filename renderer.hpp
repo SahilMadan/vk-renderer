@@ -89,6 +89,12 @@ class Renderer {
     VkDescriptorSet object_descriptor;
   };
 
+  struct UploadContext {
+    VkFence fence;
+    VkCommandPool command_pool;
+    VkCommandBuffer command_buffer;
+  };
+
   constexpr static unsigned unsigned int kFrameOverlap = 2;
 
   bool InitPipeline();
@@ -114,6 +120,8 @@ class Renderer {
   FrameData& GetFrame();
 
   void DrawObjects(VkCommandBuffer cmd, RenderObject* first, int count);
+
+  void SubmitImmediate(std::function<void(VkCommandBuffer cmd)>&& function);
 
   std::vector<RenderObject> renderables_;
   std::unordered_map<std::string, Material> materials_;
@@ -165,6 +173,8 @@ class Renderer {
 
   GpuSceneData scene_parameters_;
   AllocatedBuffer scene_parameters_buffer_;
+
+  UploadContext upload_context_;
 };
 
 }  // namespace vk

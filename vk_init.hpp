@@ -35,7 +35,7 @@ VkImageViewCreateInfo ImageViewCreateInfo(VkFormat format, VkImage image,
 VkCommandBufferAllocateInfo CommandBufferAllocateInfo(
     VkCommandPool command_pool, uint32_t count);
 
-VkFenceCreateInfo FenceCreateInfo(VkFenceCreateFlags flags);
+VkFenceCreateInfo FenceCreateInfo(VkFenceCreateFlags flags = 0);
 
 VkSemaphoreCreateInfo SemaphoreCreateInfo();
 
@@ -46,6 +46,14 @@ VkWriteDescriptorSet WriteDescriptorSet(VkDescriptorType type,
                                         VkDescriptorSet destination_set,
                                         VkDescriptorBufferInfo* buffer_info,
                                         uint32_t binding);
+
+VkCommandPoolCreateInfo CommandPoolCreateInfo(
+    uint32_t graphics_queue_family, VkCommandPoolCreateFlags flags = 0);
+
+VkCommandBufferBeginInfo CommandBufferBeginInfo(
+    VkCommandBufferUsageFlags flags = 0);
+
+VkSubmitInfo SubmitInfo(VkCommandBuffer* command_buffer);
 
 };  // namespace init
 

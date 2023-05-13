@@ -7,6 +7,7 @@ namespace util {
 
 class TaskStack {
  public:
+  ~TaskStack();
   void Push(std::function<void()>&& function);
   void Flush();
 

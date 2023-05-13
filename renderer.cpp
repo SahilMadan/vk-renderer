@@ -491,12 +491,8 @@ bool Renderer::Init(InitParams params) {
   }
 
   // Initialize the commands.
-  VkCommandPoolCreateInfo command_pool_info = {};
-  command_pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-  command_pool_info.pNext = nullptr;
-
-  command_pool_info.queueFamilyIndex = graphics_queue_family_;
-  command_pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+  VkCommandPoolCreateInfo command_pool_info = init::CommandPoolCreateInfo(
+      graphics_queue_family_, VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT);
 
   for (int i = 0; i < kFrameOverlap; i++) {
     if (vkCreateCommandPool(device_, &command_pool_info, nullptr,
@@ -515,6 +511,24 @@ bool Renderer::Init(InitParams params) {
                                  &frames_[i].command_buffer) != VK_SUCCESS) {
       return false;
     }
+  }
+
+  VkCommandPoolCreateInfo upload_command_pool_info =
+      init::CommandPoolCreateInfo(graphics_queue_family_);
+  if (vkCreateCommandPool(device_, &upload_command_pool_info, nullptr,
+                          &upload_context_.command_pool) != VK_SUCCESS) {
+    return false;
+  }
+  deletion_stack_.Push([=]() {
+    vkDestroyCommandPool(device_, upload_context_.command_pool, nullptr);
+  });
+
+  VkCommandBufferAllocateInfo upload_allocate_info =
+      init::CommandBufferAllocateInfo(upload_context_.command_pool, 1);
+
+  if (vkAllocateCommandBuffers(device_, &upload_allocate_info,
+                               &upload_context_.command_buffer) != VK_SUCCESS) {
+    return false;
   }
 
   // Initialize the default renderpass.
@@ -653,6 +667,16 @@ bool Renderer::Init(InitParams params) {
       vkDestroySemaphore(device_, frames_[i].present_semaphore, nullptr);
     });
   }
+
+  // We do not need to wait for this fence so we won't set
+  // VK_FENCE_CREATE_SIGNALED_BIT.
+  VkFenceCreateInfo upload_fence_create_info = init::FenceCreateInfo();
+  if (vkCreateFence(device_, &upload_fence_create_info, nullptr,
+                    &upload_context_.fence) != VK_SUCCESS) {
+    return false;
+  }
+  deletion_stack_.Push(
+      [=]() { vkDestroyFence(device_, upload_context_.fence, nullptr); });
 
   InitDescriptors();
 
@@ -983,18 +1007,58 @@ bool Renderer::LoadMeshes() {
 }
 
 bool Renderer::UploadMesh(Mesh& mesh) {
-  // Allocate vertex buffer.
-  VkBufferCreateInfo buffer_info = {};
-  buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-  buffer_info.pNext = nullptr;
+  util::TaskStack local_del;
+  // Uploads mesh to GPU-only memory by first copying into CPU writeable buffer
+  // and encoding a copy command in a VkCommandBuffer and submitting to a queue.
+  // GPU native memory is much faster than CPU/GPU memory.
 
-  buffer_info.size = mesh.vertices.size() * sizeof(Vertex);
-  buffer_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+  // 1. Allocate a CPU side buffer to hold the mesh before uploading it to the
+  // GPU.
+  const size_t size = mesh.vertices.size() * sizeof(Vertex);
 
-  VmaAllocationCreateInfo allocation_info = {};
-  allocation_info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
+  // Allocate staging buffer.
+  VkBufferCreateInfo staging_buffer_info = {};
+  staging_buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  staging_buffer_info.pNext = nullptr;
 
-  if (vmaCreateBuffer(allocator_, &buffer_info, &allocation_info,
+  staging_buffer_info.size = size;
+  staging_buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+  // Let VMA lib know that this data should be on CPU RAM.
+  VmaAllocationCreateInfo vma_alloc_info = {};
+  vma_alloc_info.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+
+  AllocatedBuffer staging_buffer;
+
+  if (vmaCreateBuffer(allocator_, &staging_buffer_info, &vma_alloc_info,
+                      &staging_buffer.buffer, &staging_buffer.allocation,
+                      nullptr) != VK_SUCCESS) {
+    return false;
+  }
+  local_del.Push([=]() {
+    vmaDestroyBuffer(allocator_, staging_buffer.buffer,
+                     staging_buffer.allocation);
+  });
+
+  // Copy the vertex data.
+  void* data;
+  vmaMapMemory(allocator_, staging_buffer.allocation, &data);
+  memcpy(data, mesh.vertices.data(), size);
+  vmaUnmapMemory(allocator_, staging_buffer.allocation);
+
+  // 2. Allocate GPU side buffer.
+  VkBufferCreateInfo vertex_buffer_info = {};
+  vertex_buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  vertex_buffer_info.pNext = nullptr;
+
+  vertex_buffer_info.size = size;
+  vertex_buffer_info.usage =
+      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
+  // Let VMA lib know that this data should be GPU native.
+  vma_alloc_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+
+  if (vmaCreateBuffer(allocator_, &vertex_buffer_info, &vma_alloc_info,
                       &mesh.vertex_buffer.buffer,
                       &mesh.vertex_buffer.allocation, nullptr) != VK_SUCCESS) {
     return false;
@@ -1005,36 +1069,72 @@ bool Renderer::UploadMesh(Mesh& mesh) {
                      mesh.vertex_buffer.allocation);
   });
 
-  // Copy vertex data.
-  void* data;
-  vmaMapMemory(allocator_, mesh.vertex_buffer.allocation, &data);
-  memcpy(data, mesh.vertices.data(), mesh.vertices.size() * sizeof(Vertex));
-  vmaUnmapMemory(allocator_, mesh.vertex_buffer.allocation);
+  SubmitImmediate([=](VkCommandBuffer cmd) {
+    VkBufferCopy copy;
+    copy.srcOffset = 0;
+    copy.dstOffset = 0;
+    copy.size = size;
+    vkCmdCopyBuffer(cmd, staging_buffer.buffer, mesh.vertex_buffer.buffer, 1,
+                    &copy);
+  });
 
   if (mesh.indices.empty()) {
     return true;
   }
 
+  // Repeat the above for the indices buffer.
+
+  uint32_t indices_size = mesh.indices.size() * sizeof(uint32_t);
+
+  vma_alloc_info.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+
+  AllocatedBuffer index_staging_buffer;
+
+  if (vmaCreateBuffer(allocator_, &staging_buffer_info, &vma_alloc_info,
+                      &index_staging_buffer.buffer,
+                      &index_staging_buffer.allocation,
+                      nullptr) != VK_SUCCESS) {
+    return false;
+  }
+  local_del.Push([=]() {
+    vmaDestroyBuffer(allocator_, index_staging_buffer.buffer,
+                     index_staging_buffer.allocation);
+  });
+
+  // Copy the indices data.
+  vmaMapMemory(allocator_, index_staging_buffer.allocation, &data);
+  memcpy(data, mesh.indices.data(), indices_size);
+  vmaUnmapMemory(allocator_, index_staging_buffer.allocation);
+
   VkBufferCreateInfo index_buffer_info = {};
   index_buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
   index_buffer_info.pNext = nullptr;
 
-  index_buffer_info.size = mesh.indices.size() * sizeof(uint32_t);
-  index_buffer_info.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+  index_buffer_info.size = indices_size;
+  index_buffer_info.usage =
+      VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
-  if (vmaCreateBuffer(allocator_, &index_buffer_info, &allocation_info,
+  vma_alloc_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+
+  if (vmaCreateBuffer(allocator_, &index_buffer_info, &vma_alloc_info,
                       &mesh.index_buffer.buffer, &mesh.index_buffer.allocation,
                       nullptr) != VK_SUCCESS) {
     return false;
   }
+
   deletion_stack_.Push([=]() {
     vmaDestroyBuffer(allocator_, mesh.index_buffer.buffer,
                      mesh.index_buffer.allocation);
   });
 
-  vmaMapMemory(allocator_, mesh.index_buffer.allocation, &data);
-  memcpy(data, mesh.indices.data(), mesh.indices.size() * sizeof(uint32_t));
-  vmaUnmapMemory(allocator_, mesh.index_buffer.allocation);
+  SubmitImmediate([=](VkCommandBuffer cmd) {
+    VkBufferCopy copy;
+    copy.srcOffset = 0;
+    copy.dstOffset = 0;
+    copy.size = indices_size;
+    vkCmdCopyBuffer(cmd, index_staging_buffer.buffer, mesh.index_buffer.buffer,
+                    1, &copy);
+  });
 
   return true;
 }
@@ -1400,6 +1500,38 @@ size_t Renderer::GetAlignedBufferSize(size_t original_size) {
   }
 
   return aligned_size;
+}
+
+void Renderer::SubmitImmediate(
+    std::function<void(VkCommandBuffer cmd)>&& function) {
+  VkCommandBufferBeginInfo begin_info =
+      init::CommandBufferBeginInfo(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+
+  if (vkBeginCommandBuffer(upload_context_.command_buffer, &begin_info) !=
+      VK_SUCCESS) {
+    std::cerr << "Error beginning submit immediate command.\n";
+    abort();
+  }
+
+  function(upload_context_.command_buffer);
+
+  if (vkEndCommandBuffer(upload_context_.command_buffer) != VK_SUCCESS) {
+    std::cerr << "Error ending submit immediate command.\n";
+    abort();
+  }
+
+  VkSubmitInfo submit = init::SubmitInfo(&upload_context_.command_buffer);
+
+  if (vkQueueSubmit(graphics_queue_, 1, &submit, upload_context_.fence) !=
+      VK_SUCCESS) {
+    std::cerr << "Error performing submit immediate queue submit.\n";
+    abort();
+  }
+
+  vkWaitForFences(device_, 1, &upload_context_.fence, true, 9'999'999'999);
+  vkResetFences(device_, 1, &upload_context_.fence);
+
+  vkResetCommandPool(device_, upload_context_.command_pool, 0);
 }
 
 };  // namespace vk

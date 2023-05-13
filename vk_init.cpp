@@ -228,5 +228,45 @@ VkWriteDescriptorSet WriteDescriptorSet(VkDescriptorType type,
   return write;
 }
 
+VkCommandBufferBeginInfo CommandBufferBeginInfo(
+    VkCommandBufferUsageFlags flags) {
+  VkCommandBufferBeginInfo info = {};
+  info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  info.pNext = nullptr;
+
+  info.pInheritanceInfo = nullptr;
+  info.flags = flags;
+
+  return info;
+}
+
+VkSubmitInfo SubmitInfo(VkCommandBuffer* command_buffer) {
+  VkSubmitInfo info = {};
+  info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  info.pNext = nullptr;
+
+  info.waitSemaphoreCount = 0;
+  info.pWaitSemaphores = nullptr;
+  info.pWaitDstStageMask = nullptr;
+  info.commandBufferCount = 1;
+  info.pCommandBuffers = command_buffer;
+  info.signalSemaphoreCount = 0;
+  info.pSignalSemaphores = nullptr;
+
+  return info;
+}
+
+VkCommandPoolCreateInfo CommandPoolCreateInfo(uint32_t graphics_queue_family,
+                                              VkCommandPoolCreateFlags flags) {
+  VkCommandPoolCreateInfo info = {};
+  info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+  info.pNext = nullptr;
+
+  info.queueFamilyIndex = graphics_queue_family;
+  info.flags = flags;
+
+  return info;
+}
+
 }  // namespace init
 }  // namespace vk
