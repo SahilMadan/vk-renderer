@@ -9,6 +9,8 @@
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan.h>
 
+#include "buffer.hpp"
+#include "queue_submitter.hpp"
 #include "task_stack.hpp"
 #include "vk_mesh.hpp"
 
@@ -89,12 +91,6 @@ class Renderer {
     VkDescriptorSet object_descriptor;
   };
 
-  struct UploadContext {
-    VkFence fence;
-    VkCommandPool command_pool;
-    VkCommandBuffer command_buffer;
-  };
-
   constexpr static unsigned unsigned int kFrameOverlap = 2;
 
   bool InitPipeline();
@@ -108,9 +104,6 @@ class Renderer {
 
   size_t GetAlignedBufferSize(size_t original_size);
 
-  AllocatedBuffer CreateBuffer(size_t allocation_size, VkBufferUsageFlags usage,
-                               VmaMemoryUsage memory_usage);
-
   Material* CreateMaterial(VkPipeline pipeline, VkPipelineLayout layout,
                            const std::string& name);
 
@@ -120,8 +113,6 @@ class Renderer {
   FrameData& GetFrame();
 
   void DrawObjects(VkCommandBuffer cmd, RenderObject* first, int count);
-
-  void SubmitImmediate(std::function<void(VkCommandBuffer cmd)>&& function);
 
   std::vector<RenderObject> renderables_;
   std::unordered_map<std::string, Material> materials_;
@@ -169,12 +160,12 @@ class Renderer {
   util::TaskStack deletion_stack_;
 
   Mesh triangle_mesh_;
-  std::vector<Mesh> shiba_mesh_;
+  Model shiba_model_;
 
   GpuSceneData scene_parameters_;
   AllocatedBuffer scene_parameters_buffer_;
 
-  UploadContext upload_context_;
+  std::unique_ptr<QueueSubmitter> queue_submitter_;
 };
 
 }  // namespace vk

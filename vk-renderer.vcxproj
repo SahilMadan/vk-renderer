@@ -145,19 +145,26 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="buffer.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="queue_submitter.cpp" />
     <ClCompile Include="renderer.cpp" />
     <ClCompile Include="shader.cpp" />
     <ClCompile Include="vk_init.cpp" />
     <ClCompile Include="task_stack.cpp" />
     <ClCompile Include="vk_mesh.cpp" />
+    <ClCompile Include="texture.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="buffer.hpp" />
+    <ClInclude Include="defer.hpp" />
+    <ClInclude Include="queue_submitter.hpp" />
     <ClInclude Include="renderer.hpp" />
     <ClInclude Include="shader.hpp" />
     <ClInclude Include="vk_init.hpp" />
     <ClInclude Include="task_stack.hpp" />
     <ClInclude Include="vk_mesh.hpp" />
+    <ClInclude Include="texture.hpp" />
     <ClInclude Include="vk_types.hpp" />
   </ItemGroup>
   <ItemGroup>

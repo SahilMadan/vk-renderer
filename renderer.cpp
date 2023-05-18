@@ -513,21 +513,23 @@ bool Renderer::Init(InitParams params) {
     }
   }
 
+  UploadContext upload_context;
+
   VkCommandPoolCreateInfo upload_command_pool_info =
       init::CommandPoolCreateInfo(graphics_queue_family_);
   if (vkCreateCommandPool(device_, &upload_command_pool_info, nullptr,
-                          &upload_context_.command_pool) != VK_SUCCESS) {
+                          &upload_context.command_pool) != VK_SUCCESS) {
     return false;
   }
   deletion_stack_.Push([=]() {
-    vkDestroyCommandPool(device_, upload_context_.command_pool, nullptr);
+    vkDestroyCommandPool(device_, upload_context.command_pool, nullptr);
   });
 
   VkCommandBufferAllocateInfo upload_allocate_info =
-      init::CommandBufferAllocateInfo(upload_context_.command_pool, 1);
+      init::CommandBufferAllocateInfo(upload_context.command_pool, 1);
 
   if (vkAllocateCommandBuffers(device_, &upload_allocate_info,
-                               &upload_context_.command_buffer) != VK_SUCCESS) {
+                               &upload_context.command_buffer) != VK_SUCCESS) {
     return false;
   }
 
@@ -672,12 +674,14 @@ bool Renderer::Init(InitParams params) {
   // VK_FENCE_CREATE_SIGNALED_BIT.
   VkFenceCreateInfo upload_fence_create_info = init::FenceCreateInfo();
   if (vkCreateFence(device_, &upload_fence_create_info, nullptr,
-                    &upload_context_.fence) != VK_SUCCESS) {
+                    &upload_context.fence) != VK_SUCCESS) {
     return false;
   }
   deletion_stack_.Push(
-      [=]() { vkDestroyFence(device_, upload_context_.fence, nullptr); });
+      [=]() { vkDestroyFence(device_, upload_context.fence, nullptr); });
 
+  queue_submitter_ = std::make_unique<QueueSubmitter>(device_, graphics_queue_,
+                                                      upload_context);
   InitDescriptors();
 
   if (!InitPipeline()) {
@@ -989,19 +993,22 @@ bool Renderer::LoadMeshes() {
 
   meshes_["triangle"] = triangle_mesh_;
 
-  shiba_mesh_ = LoadFromFile("assets/models/shiba/scene.gltf");
-  if (shiba_mesh_.empty()) {
+  shiba_model_ = LoadFromFile("assets/models/shiba/scene.gltf", allocator_,
+                              device_, *queue_submitter_.get());
+  if (shiba_model_.meshes.empty()) {
     return false;
   }
 
   int count = 1;
-  for (Mesh& m : shiba_mesh_) {
+  for (Mesh& m : shiba_model_.meshes) {
     if (!UploadMesh(m)) {
       return false;
     }
     std::string name = "shiba_" + std::to_string(count++);
     meshes_[name] = m;
   }
+
+  deletion_stack_.Push([=]() { shiba_model_.textures.clear(); });
 
   return true;
 }
@@ -1069,7 +1076,7 @@ bool Renderer::UploadMesh(Mesh& mesh) {
                      mesh.vertex_buffer.allocation);
   });
 
-  SubmitImmediate([=](VkCommandBuffer cmd) {
+  queue_submitter_->SubmitImmediate([=](VkCommandBuffer cmd) {
     VkBufferCopy copy;
     copy.srcOffset = 0;
     copy.dstOffset = 0;
@@ -1127,7 +1134,7 @@ bool Renderer::UploadMesh(Mesh& mesh) {
                      mesh.index_buffer.allocation);
   });
 
-  SubmitImmediate([=](VkCommandBuffer cmd) {
+  queue_submitter_->SubmitImmediate([=](VkCommandBuffer cmd) {
     VkBufferCopy copy;
     copy.srcOffset = 0;
     copy.dstOffset = 0;
@@ -1365,9 +1372,9 @@ void Renderer::InitDescriptors() {
   // Scene buffer:
   const size_t scene_parameters_buffer_size =
       kFrameOverlap * GetAlignedBufferSize(sizeof(GpuSceneData));
-  scene_parameters_buffer_ = CreateBuffer(scene_parameters_buffer_size,
-                                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                                          VMA_MEMORY_USAGE_CPU_TO_GPU);
+  scene_parameters_buffer_ = CreateBuffer(
+      allocator_, scene_parameters_buffer_size,
+      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU);
   deletion_stack_.Push([&]() {
     vmaDestroyBuffer(allocator_, scene_parameters_buffer_.buffer,
                      scene_parameters_buffer_.allocation);
@@ -1376,18 +1383,18 @@ void Renderer::InitDescriptors() {
   for (int i = 0; i < kFrameOverlap; i++) {
     // Initialize object buffer.
     const int kMaxObjects = 10'000;
-    frames_[i].object_buffer = CreateBuffer(sizeof(GpuObjectData) * kMaxObjects,
-                                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                            VMA_MEMORY_USAGE_CPU_TO_GPU);
+    frames_[i].object_buffer = CreateBuffer(
+        allocator_, sizeof(GpuObjectData) * kMaxObjects,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU);
     deletion_stack_.Push([&, i]() {
       vmaDestroyBuffer(allocator_, frames_[i].object_buffer.buffer,
                        frames_[i].object_buffer.allocation);
     });
 
     // Initialize camera buffer.
-    frames_[i].camera_buffer =
-        CreateBuffer(sizeof(GpuCameraData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                     VMA_MEMORY_USAGE_CPU_TO_GPU);
+    frames_[i].camera_buffer = CreateBuffer(allocator_, sizeof(GpuCameraData),
+                                            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                            VMA_MEMORY_USAGE_CPU_TO_GPU);
     // Add buffers to the deletion stack.
     deletion_stack_.Push([&, i]() {
       vmaDestroyBuffer(allocator_, frames_[i].camera_buffer.buffer,
@@ -1462,32 +1469,6 @@ Renderer::FrameData& Renderer::GetFrame() {
   return frames_[framenumber_ % kFrameOverlap];
 }
 
-AllocatedBuffer Renderer::CreateBuffer(size_t allocation_size,
-                                       VkBufferUsageFlags usage,
-                                       VmaMemoryUsage memory_usage) {
-  // Allocate the vertex buffer.
-  VkBufferCreateInfo info = {};
-  info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-  info.pNext = nullptr;
-
-  info.size = allocation_size;
-  info.usage = usage;
-
-  VmaAllocationCreateInfo vma_allocation_info = {};
-  vma_allocation_info.usage = memory_usage;
-
-  AllocatedBuffer buffer;
-
-  if (vmaCreateBuffer(allocator_, &info, &vma_allocation_info, &buffer.buffer,
-                      &buffer.allocation, nullptr) != VK_SUCCESS) {
-    std::cerr << "Error creating buffer of size: " << allocation_size
-              << std::endl;
-    abort();
-  }
-
-  return buffer;
-}
-
 size_t Renderer::GetAlignedBufferSize(size_t original_size) {
   // Calculate the required alignment based on minimum device offset alignment.
   size_t min_alignment = gpu_properties_.limits.minUniformBufferOffsetAlignment;
@@ -1500,38 +1481,6 @@ size_t Renderer::GetAlignedBufferSize(size_t original_size) {
   }
 
   return aligned_size;
-}
-
-void Renderer::SubmitImmediate(
-    std::function<void(VkCommandBuffer cmd)>&& function) {
-  VkCommandBufferBeginInfo begin_info =
-      init::CommandBufferBeginInfo(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-
-  if (vkBeginCommandBuffer(upload_context_.command_buffer, &begin_info) !=
-      VK_SUCCESS) {
-    std::cerr << "Error beginning submit immediate command.\n";
-    abort();
-  }
-
-  function(upload_context_.command_buffer);
-
-  if (vkEndCommandBuffer(upload_context_.command_buffer) != VK_SUCCESS) {
-    std::cerr << "Error ending submit immediate command.\n";
-    abort();
-  }
-
-  VkSubmitInfo submit = init::SubmitInfo(&upload_context_.command_buffer);
-
-  if (vkQueueSubmit(graphics_queue_, 1, &submit, upload_context_.fence) !=
-      VK_SUCCESS) {
-    std::cerr << "Error performing submit immediate queue submit.\n";
-    abort();
-  }
-
-  vkWaitForFences(device_, 1, &upload_context_.fence, true, 9'999'999'999);
-  vkResetFences(device_, 1, &upload_context_.fence);
-
-  vkResetCommandPool(device_, upload_context_.command_pool, 0);
 }
 
 };  // namespace vk

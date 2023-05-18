@@ -1,11 +1,17 @@
 #pragma once
 
+#include <vk_mem_alloc.h>
+#include <vulkan/vulkan.h>
+
 #include <array>
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 #include <vector>
 
+#include "buffer.hpp"
+#include "queue_submitter.hpp"
+#include "texture.hpp"
 #include "vk_types.hpp"
 
 namespace vk {
@@ -37,6 +43,12 @@ struct MeshPushConstants {
   glm::mat4 matrix;
 };
 
-std::vector<Mesh> LoadFromFile(const char* filename);
+struct Model {
+  std::vector<Mesh> meshes;
+  std::vector<Texture> textures;
+};
+
+Model LoadFromFile(const char* filename, VmaAllocator allocator,
+                   VkDevice device, QueueSubmitter& queue_submitter);
 
 }  // namespace vk

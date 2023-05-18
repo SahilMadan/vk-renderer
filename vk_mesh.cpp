@@ -113,6 +113,53 @@ void LoadNode(tinygltf::Model& model, tinygltf::Node& node,
   meshes.push_back(new_mesh);
 }
 
+void LoadTexture(VmaAllocator allocator, VkDevice device,
+                 vk::QueueSubmitter& queue_submitter, tinygltf::Model& model,
+                 tinygltf::Texture& texture,
+                 std::vector<vk::Texture>& textures) {
+  tinygltf::Image image = model.images[texture.source];
+  vk::TextureProperties properties;
+  properties.width = image.width;
+  properties.height = image.height;
+
+  unsigned char* buffer = nullptr;
+  size_t buffer_size = 0;
+
+  bool delete_buffer = false;
+
+  if (image.component == 3) {
+    // Most devices don't support RGB only on Vulkan so convert if necessary.
+    buffer_size = image.width * image.height * 4;
+    buffer = new unsigned char[buffer_size];
+    unsigned char* rgba = buffer;
+    unsigned char* rgb = &image.image[0];
+    for (int32_t i = 0; i < image.width * image.height; ++i) {
+      for (int32_t j = 0; j < 3; ++j) {
+        rgba[j] = rgb[j];
+      }
+      rgba += 4;
+      rgb += 3;
+    }
+
+    delete_buffer = true;
+  } else {
+    buffer = &image.image[0];
+    buffer_size = image.image.size();
+  }
+
+  // The format loaded by stbi.
+  VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
+
+  vk::Texture t = vk::Texture::CreateFromLocalBuffer(
+      allocator, device, queue_submitter, buffer, buffer_size, properties,
+      format);
+  textures.push_back(std::move(t));
+
+  if (delete_buffer) {
+    delete[] buffer;
+  }
+}
+
 }  // namespace
 
 namespace vk {
@@ -159,7 +206,9 @@ VertexInputDescription Vertex::GetDescription() {
   return description;
 }
 
-std::vector<Mesh> LoadFromFile(const char* filename) {
+Model LoadFromFile(const char* filename, VmaAllocator allocator,
+                   VkDevice device, QueueSubmitter& queue_submitter) {
+  Model out_model;
   tinygltf::TinyGLTF loader;
   tinygltf::Model model;
 
@@ -181,11 +230,14 @@ std::vector<Mesh> LoadFromFile(const char* filename) {
       model.scenes[model.defaultScene > -1 ? model.defaultScene : 0];
   tinygltf::Node& node = model.nodes[scene.nodes[0]];
 
-  std::vector<Mesh> meshes;
+  LoadNode(model, node, out_model.meshes);
 
-  LoadNode(model, node, meshes);
+  for (tinygltf::Texture& texture : model.textures) {
+    LoadTexture(allocator, device, queue_submitter, model, texture,
+                out_model.textures);
+  }
 
-  return meshes;
+  return out_model;
 }
 
 }  // namespace vk
